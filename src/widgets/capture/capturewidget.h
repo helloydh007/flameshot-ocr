@@ -129,6 +129,7 @@ protected:
     void moveEvent(QMoveEvent* moveEvent) override;
     void changeEvent(QEvent* changeEvent) override;
     void closeEvent(QCloseEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     void pushObjectsStateToUndoStack();
@@ -208,6 +209,8 @@ private:
 
     // Outside selection opacity
     int m_opacity;
+    // flameshot-ocr: 渐入用的当前压暗值（动画驱动，避免选区出现时突然变暗）
+    qreal m_dimAlpha = 0;
     int m_toolSizeByKeyboard;
 
     // utility flags

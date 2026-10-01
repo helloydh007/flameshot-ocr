@@ -9,8 +9,10 @@
 #include <QActionGroup>
 #include <QColor>
 #include <QFrame>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QMenu>
+#include <QPropertyAnimation>
 #include <QToolButton>
 
 namespace
@@ -239,6 +241,28 @@ void PreToolbar::setDrawColorPreview(const QColor& color)
     swatch.fill(color);
     m_colorBtn->setIcon(QIcon(swatch));
     m_colorBtn->setIconSize(QSize(18, 18));
+}
+
+void PreToolbar::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    // flameshot-ocr: 渐入，避免工具条突然弹出
+    auto* effect = graphicsEffect()
+                     ? qobject_cast<QGraphicsOpacityEffect*>(graphicsEffect())
+                     : nullptr;
+    if (!effect) {
+        effect = new QGraphicsOpacityEffect(this);
+        setGraphicsEffect(effect);
+    }
+    effect->setOpacity(0.0);
+    auto* fade = new QPropertyAnimation(effect, "opacity", this);
+    fade->setDuration(120);
+    fade->setStartValue(0.0);
+    fade->setEndValue(1.0);
+    fade->setEasingCurve(QEasingCurve::InOutQuad);
+    connect(fade, &QPropertyAnimation::finished, fade,
+            &QPropertyAnimation::deleteLater);
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void PreToolbar::paintEvent(QPaintEvent*)

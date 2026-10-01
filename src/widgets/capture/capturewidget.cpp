@@ -45,7 +45,9 @@
 #include <QClipboard>
 #include <QEventLoop>
 #include <QMimeData>
+#include <QPropertyAnimation>
 #include <QToolTip>
+#include <QVariantAnimation>
 #include <QImage>
 #include <QProcess>
 #include <QRegularExpression>
@@ -2762,9 +2764,30 @@ void CaptureWidget::drawInactiveRegion(QPainter* painter)
     // flameshot-ocr: 未框选时不压暗屏幕（Win11 风格，保持画面原样，
     // 预选区悬浮工具条和取色都在这个状态下工作）
     if (!m_selection->isVisible()) {
+        // 选区刚消失时恢复明亮，同时把渐入状态复位
+        if (m_dimAlpha > 0) {
+            m_dimAlpha = 0;
+        }
         return;
     }
-    QColor overlayColor(0, 0, 0, m_opacity);
+    // 选区首次出现：把压暗从 0 渐入到目标值，避免“闪一下”变暗
+    if (m_dimAlpha <= 0) {
+        m_dimAlpha = 1;
+        auto* dimAnim = new QVariantAnimation(this);
+        dimAnim->setDuration(150);
+        dimAnim->setStartValue(1);
+        dimAnim->setEndValue(m_opacity);
+        dimAnim->setEasingCurve(QEasingCurve::InOutQuad);
+        connect(dimAnim, &QVariantAnimation::valueChanged, this,
+                [this](const QVariant& v) {
+                    m_dimAlpha = v.toReal();
+                    update();
+                });
+        connect(dimAnim, &QVariantAnimation::finished, dimAnim,
+                &QVariantAnimation::deleteLater);
+        dimAnim->start(QAbstractAnimation::DeleteWhenStopped);
+    }
+    QColor overlayColor(0, 0, 0, int(m_dimAlpha));
     painter->setBrush(overlayColor);
     QRect r = m_selection->geometry().normalized();
     QRegion grey(rect());
@@ -2772,4 +2795,18 @@ void CaptureWidget::drawInactiveRegion(QPainter* painter)
 
     painter->setClipRegion(grey);
     painter->drawRect(-1, -1, rect().width() + 1, rect().height() + 1);
+}
+
+// flameshot-ocr: 截图窗渐入，消除 Wayland 首帧闪变
+void CaptureWidget::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    auto* fade = new QPropertyAnimation(this, "windowOpacity", this);
+    fade->setDuration(150);
+    fade->setStartValue(0.0);
+    fade->setEndValue(1.0);
+    fade->setEasingCurve(QEasingCurve::InOutQuad);
+    connect(fade, &QPropertyAnimation::finished, fade,
+            &QPropertyAnimation::deleteLater);
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
 }
