@@ -45,6 +45,8 @@
 #include <QClipboard>
 #include <QEventLoop>
 #include <QMimeData>
+#include <QLabel>
+#include <QToolButton>
 #include <QPropertyAnimation>
 #include <QToolTip>
 #include <QVariantAnimation>
@@ -371,9 +373,13 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
                     // 橡皮擦与绘制工具互斥
                     m_activeButton = nullptr;
                     releaseActiveTool();
-                    updateSelectionState();
-                    updateCursor();
                 }
+                if (m_eraserActive && m_panel->activeLayerIndex() >= 0) {
+                    // 橡皮擦与对象选中态互斥（选中会让拖动变成移动）
+                    m_panel->setActiveLayer(-1);
+                }
+                updateSelectionState();
+                updateCursor();
                 m_preToolbar->setEraserChecked(m_eraserActive);
             });
     m_preToolbar->show();
@@ -989,6 +995,94 @@ void CaptureWidget::runSelfTest()
         // 注意：测试中不关闭 pin —— 在合成流程里 close 会触发应用的
         // captureFailed→exit 机制，打断后续嵌套事件循环测试；
         // 生产流程中钉图是“先关截图窗再钉”，不存在此路径。
+
+        // 10: 钉图标注引擎实证 —— 画矩形 → 清空（闪退金丝雀）→ 再画 → 撤销
+        {
+            // 先归零配置（前序测试曾把 true 写进 ini 造成断言污染）
+            ConfigHandler().setPinShowToolbar(false);
+            auto* annotator = pin2->findChild<PinAnnotator*>();
+            qWarning() << "SELFTEST 10 pin-annotator-found:"
+                       << (annotator ? "PASS" : "FAIL")
+                       << "geo:" << (annotator ? annotator->geometry() : QRect())
+                       << "labelGeo:" << pin2->findChild<QLabel*>()->geometry();
+            auto annoPress = [&](const QPoint& p) {
+                QMouseEvent ev(QEvent::MouseButtonPress, QPointF(p),
+                               QPointF(p), Qt::LeftButton, Qt::LeftButton,
+                               Qt::NoModifier);
+                QApplication::sendEvent(annotator, &ev);
+            };
+            auto annoMove = [&](const QPoint& p) {
+                QMouseEvent ev(QEvent::MouseMove, QPointF(p), QPointF(p),
+                               Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(annotator, &ev);
+            };
+            auto annoRelease = [&](const QPoint& p) {
+                QMouseEvent ev(QEvent::MouseButtonRelease, QPointF(p),
+                               QPointF(p), Qt::LeftButton, Qt::NoButton,
+                               Qt::NoModifier);
+                QApplication::sendEvent(annotator, &ev);
+            };
+            // 选矩形工具（走工具条按钮的生产路径）
+            QToolButton* rectBtn = nullptr;
+            const auto buttons = toolBar2->findChildren<QToolButton*>();
+            for (auto* b : buttons) {
+                if (b->toolTip().contains(
+                      OcrPanel::tr2("矩形", "Rectangle"))) {
+                    rectBtn = b;
+                }
+            }
+            qWarning() << "SELFTEST 10 pin-rect-btn-found:"
+                       << (rectBtn ? "PASS" : "FAIL");
+            if (rectBtn) {
+                rectBtn->click();
+            }
+            annoPress(QPoint(60, 60));
+            annoMove(QPoint(160, 130));
+            annoRelease(QPoint(160, 130));
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            qWarning() << "SELFTEST 10 pin-rect-drawn:"
+                       << ((annotator && annotator->hasShapes()) ? "PASS"
+                                                                  : "FAIL");
+            // 清空（用户报告的闪退点）—— 崩溃则测试进程直接终止
+            annotator->clearShapes();
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            qWarning() << "SELFTEST 10 pin-clear-survived:"
+                       << ((!annotator->hasShapes()) ? "PASS" : "FAIL");
+            // 再画一笔并撤销
+            annoPress(QPoint(200, 200));
+            annoMove(QPoint(260, 250));
+            annoRelease(QPoint(260, 250));
+            annotator->undo();
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            qWarning() << "SELFTEST 10 pin-undo:"
+                       << ((!annotator->hasShapes()) ? "PASS" : "FAIL");
+            fflush(stderr);
+        }
+
+        // 11: 橡皮擦 —— 包围盒命中（空心矩形内部点击即删）
+        {
+            // 画一个空心矩形（默认不填充）
+            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
+            synthMousePress(QPoint(900, 300));
+            synthMouseMove(QPoint(1050, 400));
+            synthMouseRelease(QPoint(1050, 400));
+            const int countBefore = m_captureToolObjects.size();
+            // 进入橡皮擦，点击矩形“内部”（非边框）
+            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE); // 先取消选中
+            handleToolSignal(CaptureTool::REQ_CLEAR_SELECTION);
+            m_eraserActive = true;
+            updateSelectionState();
+            updateCursor();
+            synthMousePress(QPoint(975, 350));
+            synthMouseRelease(QPoint(975, 350));
+            const int countAfter = m_captureToolObjects.size();
+            m_eraserActive = false;
+            updateSelectionState();
+            updateCursor();
+            qWarning() << "SELFTEST 11 eraser-bbox-delete:"
+                       << (countAfter == countBefore - 1 ? "PASS" : "FAIL")
+                       << countBefore << "->" << countAfter;
+        }
     }
 
     // ⑦ 确认框与「关闭返回悬浮工具条」行为（Esc / ✕ / 钉图三条路径）
@@ -1577,7 +1671,12 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
     }
     // flameshot-ocr: 橡皮擦模式 —— 点击标注直接删除
     if (m_eraserActive && e->button() == Qt::LeftButton) {
-        const int index = m_captureToolObjects.find(e->pos(), size());
+        // flameshot-ocr: 包围盒优先命中（空心矩形/椭圆内部无绘制像素，
+        // find() 点中间会落空），线状笔画退回像素级命中
+        int index = objectIndexContainingPoint(e->pos());
+        if (index < 0) {
+            index = m_captureToolObjects.find(e->pos(), size());
+        }
         if (index >= 0) {
             m_captureToolObjectsBackup = m_captureToolObjects;
             m_captureToolObjects.removeAt(index);
@@ -2891,6 +2990,12 @@ void CaptureWidget::updateCursor()
 
 void CaptureWidget::updateSelectionState()
 {
+    // flameshot-ocr: 橡皮擦模式下屏蔽选区控件——
+    // 否则拖动空白处会画出区域选区（用户未开启框选时也会发生）
+    if (m_eraserActive) {
+        m_selection->setIgnoreMouse(true);
+        return;
+    }
     auto toolType = activeButtonToolType();
     if (toolType == CaptureTool::TYPE_MOVESELECTION) {
         m_selection->setIdleCentralCursor(Qt::OpenHandCursor);

@@ -204,8 +204,13 @@ void PinAnnotator::mouseMoveEvent(QMouseEvent* event)
         const QPointF p = toBase(event->pos());
         if (m_current.type == Pencil || m_current.type == Marker) {
             m_current.points.append(p);
-        } else if (!m_current.points.isEmpty()) {
+        } else if (m_current.points.size() >= 2) {
             m_current.points[1] = p;
+        } else if (!m_current.points.isEmpty()) {
+            // 两点图形（矩形/椭圆/箭头/直线）：按下时只有 1 个点，
+            // 第一次移动必须 append 出第二个点，否则 points[1] 越界
+            // （曾导致堆损坏、钉图工具条点击清空后闪退）
+            m_current.points.append(p);
         }
         update();
         event->accept();
