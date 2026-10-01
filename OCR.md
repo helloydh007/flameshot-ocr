@@ -37,6 +37,24 @@ ocrCommand=rapidocr %i
 sudo apt install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng
 ```
 
+### flameshot-ocr 新增配置项（均在 `[General]` 段）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `ocrCommand` | `tesseract %i stdout -l chi_sim+eng --psm 6` | OCR 引擎命令，`%i`=临时图片 |
+| `colorPickFormat` | `hex` | 取色复制格式：`hex`(#RRGGBB) / `rgb`(r, g, b) |
+| `shapeFill` | `false` | 矩形/椭圆填充开关（false=只显示边框） |
+| `resizeSensitivity` | `50` | 缩放增益百分比（1-100）；本机设为 20（比鼠标慢 5 倍） |
+| `pinShowToolbar` | `false` | 钉图快捷工具条默认显隐（钉图右键菜单可开关并记忆） |
+
+### 调试/验证钩子（仅环境变量门控，平时零影响）
+
+- `FLAMESHOT_OCR_SELFTEST=1`：运行 25 项状态机自测（合成鼠标/滚轮事件驱动真实
+  处理器：绘制/选中/框外缩放/内部拖动/自适应增益/橡皮擦包围盒删除/钉图画矩形/
+  清空/撤销/确认框），完毕后优雅退出（供 LeakSanitizer 出报告）
+- `FLAMESHOT_OCR_AUTOTEST=1|2`：唤出截图后自动跑整屏 OCR（2=先设半屏选区）
+
+
 ## 构建与安装
 
 ```bash

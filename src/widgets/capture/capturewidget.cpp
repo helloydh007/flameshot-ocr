@@ -1178,6 +1178,21 @@ void CaptureWidget::runSelfTest()
     }
     qWarning() << "SELFTEST: end";
     fflush(stderr);
+
+    // flameshot-ocr: 自测完毕后优雅退出（关闭所有窗口 → 事件循环自然结束），
+    // 让 LeakSanitizer 在进程退出时输出完整的泄漏报告
+    if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
+        QTimer::singleShot(500, this, [this]() {
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                if (widget && widget->isVisible() && widget != this &&
+                    widget->metaObject()->className() ==
+                      QStringLiteral("PinWidget")) {
+                    widget->close();
+                }
+            }
+            close();
+        });
+    }
 }
 
 // flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口（直接导出，不走析构路径）

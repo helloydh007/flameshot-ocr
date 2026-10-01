@@ -347,13 +347,17 @@ void PinWidget::mouseDoubleClickEvent(QMouseEvent*)
 
 void PinWidget::mousePressEvent(QMouseEvent* e)
 {
+    Q_UNUSED(e)
     if (QWindow* window = windowHandle(); window != nullptr) {
         window->startSystemMove();
         return;
     }
 }
 
-void PinWidget::mouseMoveEvent(QMouseEvent* e) {}
+void PinWidget::mouseMoveEvent(QMouseEvent* e)
+{
+    Q_UNUSED(e)
+}
 
 void PinWidget::keyPressEvent(QKeyEvent* event)
 {
@@ -466,6 +470,7 @@ QPixmap PinWidget::compositedPixmap() const
 
 void PinWidget::paintEvent(QPaintEvent* event)
 {
+    Q_UNUSED(event)
     if (m_sizeChanged) {
         // flameshot-ocr: 统一 KeepAspectRatio，滚轮放大/缩小表现一致
         const auto aspectRatio = Qt::KeepAspectRatio;

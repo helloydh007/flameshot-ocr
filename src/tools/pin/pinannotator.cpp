@@ -59,6 +59,7 @@ void PinAnnotator::clearShapes()
 
 void PinAnnotator::applyRotateRight(int oldWidth, int oldHeight)
 {
+    Q_UNUSED(oldWidth)
     // QTransform().rotate(90) 的映射：(x, y) -> (oldHeight - y, x)
     for (PinShape& s : m_shapes) {
         for (QPointF& p : s.points) {
@@ -70,6 +71,7 @@ void PinAnnotator::applyRotateRight(int oldWidth, int oldHeight)
 
 void PinAnnotator::applyRotateLeft(int oldWidth, int oldHeight)
 {
+    Q_UNUSED(oldHeight)
     // QTransform().rotate(270) 的映射：(x, y) -> (y, oldWidth - x)
     for (PinShape& s : m_shapes) {
         for (QPointF& p : s.points) {
