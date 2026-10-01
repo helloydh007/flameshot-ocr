@@ -714,6 +714,16 @@ void CaptureWidget::runSelfTest()
                << before << "->" << after;
 
     // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
+    {
+        // 取色放大镜：startGrabbing 后无需移动鼠标即应可见
+        ColorGrabWidget grabber(&m_context.origScreenshot, this);
+        grabber.startGrabbing();
+        qWarning() << "SELFTEST 2 magnifier-visible:"
+                   << (grabber.isVisible() ? "PASS" : "FAIL");
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(qApp, &esc);
+    }
+
     m_selection->show();
     const QRect selRect(rect().width() * 0.25, rect().height() * 0.25,
                         rect().width() * 0.4, rect().height() * 0.3);
@@ -1419,6 +1429,9 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
     if (m_objectResizing) {
         CaptureTool* object = activeToolObject().data();
         if (object) {
+            // 与上游移动对象相同的重绘模式：失效旧区域 → 改对象 →
+            // drawToolsData 从原图重画（清残影）→ 再画选择框 → 失效新区域
+            update(paddedUpdateRect(object->boundingRect()));
             const QPoint delta = e->pos() - m_objectResizeStartPos;
             QRect newRect = m_objectStartRect;
             if (m_objectResizeHandle & 1) {
@@ -1436,6 +1449,7 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
             newRect = newRect.normalized();
             if (newRect.width() >= 8 && newRect.height() >= 8) {
                 scaleToolToRect(object, m_objectStartRect, newRect);
+                drawToolsData(false);
                 drawObjectSelection();
                 update(paddedUpdateRect(object->boundingRect()));
             }

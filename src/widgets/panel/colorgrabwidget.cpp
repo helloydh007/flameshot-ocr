@@ -56,6 +56,11 @@ void ColorGrabWidget::startGrabbing()
     // This is undone in the destructor.
     qApp->setOverrideCursor(Qt::CrossCursor);
     qApp->installEventFilter(this);
+    // flameshot-ocr: 进入取色即显示放大镜（跟随光标），无需先移动/点击
+    if (m_magnifierActive) {
+        updateWidget();
+        show();
+    }
     OverlayMessage::pushKeyMap(
       { { tr("Enter or Left Click"), tr("Accept color") },
         { tr("Hold Left Click"), tr("Precisely select color") },
