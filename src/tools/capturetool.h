@@ -50,6 +50,7 @@ public:
         TYPE_INVERT = 22,
         TYPE_ACCEPT = 23,
         TYPE_CANCEL = 24,
+        TYPE_OCR = 25,
     };
     Q_ENUM(Type);
 
@@ -77,7 +78,9 @@ public:
         // increase tool size for all tools
         REQ_INCREASE_TOOL_SIZE,
         // decrease tool size for all tools
-        REQ_DECREASE_TOOL_SIZE
+        REQ_DECREASE_TOOL_SIZE,
+        // (flameshot-ocr) run OCR on the selection and show text beside it
+        REQ_OCR
     };
 
     explicit CaptureTool(QObject* parent = nullptr)

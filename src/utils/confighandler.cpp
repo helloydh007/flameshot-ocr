@@ -138,6 +138,8 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     OPTION("jpegQuality"                 , BoundedInt        ( 0,100,75      )),
     OPTION("reverseArrow"                ,Bool               ( false         )),
     OPTION("insecurePixelate"            ,Bool               ( false         )),
+    // flameshot-ocr: command template for the OCR tool, %i = input image path
+    OPTION("ocrCommand"                  ,String             ( "tesseract %i stdout -l chi_sim+eng --psm 6" )),
 };
 
 static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {
@@ -166,6 +168,7 @@ static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {
     SHORTCUT("TYPE_INVERT"              ,   "I"                     ),
     SHORTCUT("TYPE_REDO"                ,   "Ctrl+Shift+Z"          ),
     SHORTCUT("TYPE_TEXT"                ,   "T"                     ),
+    SHORTCUT("TYPE_OCR"                 ,   "O"                     ),
     SHORTCUT("TYPE_TOGGLE_PANEL"        ,   "Space"                 ),
     SHORTCUT("TYPE_GRAB_COLOR"          ,   "G"                     ),
     SHORTCUT("TYPE_RESIZE_LEFT"         ,   "Shift+Left"            ),

@@ -22,6 +22,7 @@
 #include "src/widgets/capture/selectionwidget.h"
 #include <QMessageBox>
 #include <QPointer>
+#include <QProcess>
 #include <QTimer>
 #include <QUndoStack>
 #include <QWidget>
@@ -41,6 +42,8 @@ class UpdateNotificationWidget;
 #endif
 class UtilityPanel;
 class SidePanelWidget;
+class OcrPanel;
+class QTemporaryFile;
 
 class CaptureWidget : public QWidget
 {
@@ -136,6 +139,8 @@ private:
     void pushToolToStack();
     void makeChild(QWidget* w);
     void restoreCircleCountState();
+    void runOcr();
+    void onOcrFinished(int exitCode, QProcess::ExitStatus status);
 
     QList<QShortcut*> newShortcut(const QKeySequence& key,
                                   QWidget* parent,
@@ -163,6 +168,11 @@ private:
 
     // Context information
     CaptureContext m_context;
+
+    // flameshot-ocr: OCR process and result panel
+    OcrPanel* m_ocrPanel = nullptr;
+    QProcess* m_ocrProcess = nullptr;
+    QTemporaryFile* m_ocrTempFile = nullptr;
 
     // Main ui color
     QColor m_uiColor;

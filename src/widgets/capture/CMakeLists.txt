@@ -11,6 +11,7 @@ target_sources(
         selectionwidget.h
         magnifierwidget.h
         notifierbox.h
+        ocrpanel.h
         modificationcommand.h)
 
 target_sources(
@@ -23,6 +24,7 @@ target_sources(
         hovereventfilter.cpp
         overlaymessage.cpp
         notifierbox.cpp
+        ocrpanel.cpp
         selectionwidget.cpp
         magnifierwidget.cpp
         modificationcommand.cpp)

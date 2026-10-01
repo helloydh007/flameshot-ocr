@@ -22,6 +22,7 @@
 #include "src/widgets/capture/hovereventfilter.h"
 #include "src/widgets/capture/modificationcommand.h"
 #include "src/widgets/capture/notifierbox.h"
+#include "src/widgets/capture/ocrpanel.h"
 #include "src/widgets/capture/overlaymessage.h"
 #include "src/widgets/orientablepushbutton.h"
 #include "src/widgets/panel/sidepanelwidget.h"
@@ -35,6 +36,11 @@
 #include <QPainter>
 #include <QScreen>
 #include <QShortcut>
+#include <QImage>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QStandardPaths>
+#include <QTemporaryFile>
 #include <draggablewidgetmaker.h>
 
 #if !defined(DISABLE_UPDATE_CHECKER)
@@ -287,6 +293,28 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
     initQuitPrompt();
 
     updateCursor();
+
+    // flameshot-ocr: automated test hook — run OCR shortly after the GUI shows.
+    // FLAMESHOT_OCR_AUTOTEST=1: whole-screen OCR; =2: half-screen selection
+    // first (so the tool button bar is visible), then OCR.
+    if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_AUTOTEST")) {
+        QTimer::singleShot(1200, this, [this]() {
+            if (qEnvironmentVariable("FLAMESHOT_OCR_AUTOTEST") ==
+                QLatin1String("2")) {
+                QRect sel(rect().width() * 0.1,
+                          rect().height() * 0.3,
+                          rect().width() * 0.8,
+                          rect().height() * 0.4);
+                m_selection->show();
+                m_selection->setGeometry(sel);
+                emit m_selection->geometrySettled();
+                m_buttonHandler->show();
+                updateSelectionState();
+                m_context.selection = sel;
+            }
+            runOcr();
+        });
+    }
 }
 
 CaptureWidget::~CaptureWidget()
@@ -412,6 +440,10 @@ void CaptureWidget::handleButtonLeftClick(CaptureToolButton* b)
 {
     if (!b) {
         return;
+    }
+    if (m_ocrPanel && m_ocrPanel->isVisible() && b->tool() &&
+        b->tool()->type() != CaptureTool::TYPE_OCR) {
+        m_ocrPanel->hide();
     }
     setState(b);
 }
@@ -861,6 +893,9 @@ int CaptureWidget::selectToolItemAtPos(const QPoint& pos)
 void CaptureWidget::mousePressEvent(QMouseEvent* e)
 {
     activateWindow();
+    if (m_ocrPanel && m_ocrPanel->isVisible()) {
+        m_ocrPanel->hide();
+    }
     m_startMove = false;
     m_startMovePos = QPoint();
     m_mousePressedPos = e->pos();
@@ -1475,6 +1510,9 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
                 Flameshot::instance()->setExternalWidget(true);
             }
             break;
+        case CaptureTool::REQ_OCR:
+            runOcr();
+            break;
         case CaptureTool::REQ_INCREASE_TOOL_SIZE:
             setToolSize(m_context.toolSize + 1);
             break;
@@ -1484,6 +1522,96 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
         default:
             break;
     }
+}
+
+// flameshot-ocr: run OCR on the current selection (or the whole capture when
+// nothing is selected) and display the result in a panel beside the selection.
+void CaptureWidget::runOcr()
+{
+    QRect sel = m_context.selection.isNull() ? rect() : m_context.selection;
+    sel = sel.normalized().intersected(rect());
+    if (sel.isEmpty()) {
+        return;
+    }
+
+    if (!m_ocrPanel) {
+        m_ocrPanel = new OcrPanel(this);
+    }
+    m_ocrPanel->showLoading(sel);
+
+    const qreal dpr = m_context.origScreenshot.devicePixelRatio();
+    QRect deviceRect(sel.topLeft() * dpr, sel.bottomRight() * dpr);
+    deviceRect = deviceRect.intersected(m_context.origScreenshot.rect());
+    if (deviceRect.isEmpty()) {
+        m_ocrPanel->showFailure();
+        return;
+    }
+    const QImage crop = m_context.origScreenshot.toImage().copy(deviceRect);
+
+    if (!m_ocrProcess) {
+        m_ocrProcess = new QProcess(this);
+        connect(m_ocrProcess,
+                &QProcess::finished,
+                this,
+                &CaptureWidget::onOcrFinished);
+        connect(m_ocrProcess,
+                &QProcess::errorOccurred,
+                this,
+                [this](QProcess::ProcessError error) {
+                    if (error == QProcess::FailedToStart && m_ocrPanel) {
+                        m_ocrPanel->showFailure(
+                          QStringLiteral("tesseract: FailedToStart"));
+                    }
+                });
+    }
+    if (m_ocrProcess->state() != QProcess::NotRunning) {
+        m_ocrProcess->kill();
+        m_ocrProcess->waitForFinished(3000);
+    }
+
+    delete m_ocrTempFile;
+    m_ocrTempFile = new QTemporaryFile(this);
+    m_ocrTempFile->setFileTemplate(
+      QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+      QStringLiteral("/flameshot-ocr-XXXXXX.png"));
+    if (!m_ocrTempFile->open() || !crop.save(m_ocrTempFile, "PNG")) {
+        m_ocrPanel->showFailure(QStringLiteral("Cannot write temporary image"));
+        return;
+    }
+
+    QString command = ConfigHandler().ocrCommand();
+    command.replace(QStringLiteral("%i"), m_ocrTempFile->fileName());
+    QStringList args = QProcess::splitCommand(command);
+    if (args.isEmpty()) {
+        m_ocrPanel->showFailure(QStringLiteral("Empty ocrCommand"));
+        return;
+    }
+    const QString program = args.takeFirst();
+    m_ocrProcess->start(program, args);
+}
+
+void CaptureWidget::onOcrFinished(int exitCode, QProcess::ExitStatus status)
+{
+    if (!m_ocrPanel) {
+        return;
+    }
+    if (status != QProcess::NormalExit || exitCode != 0) {
+        const QString err =
+          QString::fromLocal8Bit(m_ocrProcess->readAllStandardError())
+            .simplified();
+        m_ocrPanel->showFailure(err.left(300));
+        return;
+    }
+    QString text = QString::fromUtf8(m_ocrProcess->readAllStandardOutput());
+    text.remove(QChar('\f'));
+    text.replace(QRegularExpression(QStringLiteral("\\n{3,}")),
+                 QStringLiteral("\n\n"));
+    text = text.trimmed();
+    if (text.isEmpty()) {
+        m_ocrPanel->showFailure();
+        return;
+    }
+    m_ocrPanel->showText(text);
 }
 
 /**

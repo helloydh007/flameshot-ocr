@@ -13,6 +13,7 @@
 #endif
 #include "invert/inverttool.h"
 #include "launcher/applaunchertool.h"
+#include "ocr/ocrtool.h"
 #include "line/linetool.h"
 #include "marker/markertool.h"
 #include "move/movetool.h"
@@ -66,6 +67,7 @@ CaptureTool* ToolFactory::CreateTool(CaptureTool::Type t, QObject* parent)
         if_TYPE_return_TOOL(TYPE_SIZEDECREASE, SizeDecreaseTool);
         if_TYPE_return_TOOL(TYPE_INVERT, InvertTool);
         if_TYPE_return_TOOL(TYPE_ACCEPT, AcceptTool);
+        if_TYPE_return_TOOL(TYPE_OCR, OcrTool);
         default:
             return nullptr;
     }
