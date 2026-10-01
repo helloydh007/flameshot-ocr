@@ -60,7 +60,7 @@ PreToolbar::PreToolbar(QWidget* parent)
                                                  OcrPanel::tr2("马赛克", "Pixelate")) },
         { CaptureTool::TYPE_ARROW, flatButton(this, "arrow-bottom-left",
                                               OcrPanel::tr2("箭头", "Arrow")) },
-        { CaptureTool::TYPE_RECTANGLE, flatButton(this, "format_underlined",
+        { CaptureTool::TYPE_RECTANGLE, flatButton(this, "rectangle",
                                                   OcrPanel::tr2("矩形", "Rectangle")) },
         { CaptureTool::TYPE_CIRCLE, flatButton(this, "circle-outline",
                                                OcrPanel::tr2("椭圆", "Ellipse")) },

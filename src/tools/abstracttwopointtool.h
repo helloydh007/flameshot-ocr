@@ -22,6 +22,7 @@ public:
     int size() const override { return m_thickness; };
     const QColor& color() { return m_color; };
     const QPair<QPoint, QPoint> points() const { return m_points; };
+    void setPoints(const QPair<QPoint, QPoint>& points) { m_points = points; };
     void paintMousePreview(QPainter& painter,
                            const CaptureContext& context) override;
 

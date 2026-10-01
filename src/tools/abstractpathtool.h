@@ -20,6 +20,8 @@ public:
     void move(const QPoint& mousePos) override;
     const QPoint* pos() override;
     int size() const override { return m_thickness; };
+    QVector<QPoint> points() const { return m_points; };
+    void setPoints(const QVector<QPoint>& points) { m_points = points; };
 
 public slots:
     void drawEnd(const QPoint& p) override;

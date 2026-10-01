@@ -461,8 +461,8 @@ QPixmap PinWidget::compositedPixmap() const
 void PinWidget::paintEvent(QPaintEvent* event)
 {
     if (m_sizeChanged) {
-        const auto aspectRatio =
-          m_expanding ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio;
+        // flameshot-ocr: 统一 KeepAspectRatio，滚轮放大/缩小表现一致
+        const auto aspectRatio = Qt::KeepAspectRatio;
         const auto transformType = ConfigHandler().antialiasingPinZoom()
                                      ? Qt::SmoothTransformation
                                      : Qt::FastTransformation;

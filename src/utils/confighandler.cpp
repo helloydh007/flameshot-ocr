@@ -75,7 +75,7 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
         recognizedGeneralOptions = {
 //         KEY                            TYPE                 DEFAULT_VALUE
     OPTION("showHelp"                    ,Bool               ( false         )),
-    OPTION("showSidePanelButton"         ,Bool               ( true          )),
+    OPTION("showSidePanelButton"         ,Bool               ( false         )),
     OPTION("showDesktopNotification"     ,Bool               ( true          )),
     OPTION("showAbortNotification"       ,Bool               ( true          )),
     OPTION("disabledTrayIcon"            ,Bool               ( false         )),

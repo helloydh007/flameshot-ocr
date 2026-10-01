@@ -131,6 +131,8 @@ private:
     void releaseActiveTool();
     void uncheckActiveTool();
     int selectToolItemAtPos(const QPoint& pos);
+    int objectResizeHandleAt(const QPoint& pos);
+    void scaleToolToRect(CaptureTool* tool, const QRect& from, const QRect& to);
     void showColorPicker(const QPoint& pos);
     bool startDrawObjectTool(const QPoint& pos);
     QPointer<CaptureTool> activeToolObject();
@@ -190,6 +192,10 @@ private:
     ColorGrabWidget* m_colorGrabber = nullptr;
     QHash<CaptureTool::Type, CaptureToolButton*> m_buttonsByType;
     bool m_eraserActive = false;
+    bool m_objectResizing = false;
+    int m_objectResizeHandle = 0;
+    QRect m_objectStartRect;
+    QPoint m_objectResizeStartPos;
 
     // Main ui color
     QColor m_uiColor;

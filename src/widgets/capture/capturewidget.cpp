@@ -12,6 +12,8 @@
 #include "capturewidget.h"
 #include "abstractlogger.h"
 #include "copytool.h"
+#include "src/tools/abstractpathtool.h"
+#include "src/tools/abstracttwopointtool.h"
 #include "src/config/cacheutils.h"
 #include "src/core/flameshot.h"
 #include "src/core/qguiappcurrentscreen.h"
@@ -781,7 +783,10 @@ void CaptureWidget::deleteToolWidgetOrClose()
         m_colorPicker->hide();
     } else {
         // close CaptureWidget
-        if (m_config.showQuitPrompt()) {
+        // flameshot-ocr: 已有手绘标注时强制确认，避免误触丢失
+        const bool hasDrawings =
+          !m_captureToolObjects.captureToolObjects().isEmpty();
+        if (hasDrawings || m_config.showQuitPrompt()) {
             // need to show prompt
             if (m_quitPrompt->isHidden() && promptQuit()) {
                 close();
@@ -900,7 +905,6 @@ void CaptureWidget::paintEvent(QPaintEvent* paintEvent)
         // smack right up to the box; they aren't critical and the box
         // size itself is tied to the font metrics
         xybox.adjust(0, 0, 10, 12);
-        // in anticipation of making the position adjustable
         int x0, y0;
         // Move these to header
 
@@ -932,12 +936,18 @@ void CaptureWidget::paintEvent(QPaintEvent* paintEvent)
                   selection.top() + (selection.height() - xybox.height()) / 2;
         }
 
-        QColor uicolor = ConfigHandler().uiColor();
-        uicolor.setAlpha(200);
-        painter.fillRect(
-          x0, y0, xybox.width(), xybox.height(), QBrush(uicolor));
-        painter.setPen(ColorUtils::colorIsDark(uicolor) ? Qt::white
-                                                        : Qt::black);
+        // flameshot-ocr: 实心深色底 + UI 色描边 + 白色粗体，任何背景下清晰可读
+        painter.fillRect(x0,
+                         y0,
+                         xybox.width(),
+                         xybox.height(),
+                         QColor(20, 20, 24, 245));
+        painter.setPen(QPen(ConfigHandler().uiColor(), 1));
+        painter.drawRect(x0, y0, xybox.width() - 1, xybox.height() - 1);
+        QFont xyFont = painter.font();
+        xyFont.setBold(true);
+        painter.setFont(xyFont);
+        painter.setPen(Qt::white);
         painter.drawText(x0,
                          y0,
                          xybox.width(),
@@ -1144,6 +1154,20 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
     }
 
     selectToolItemAtPos(m_mousePressedPos);
+
+    // flameshot-ocr: 选中对象的角点拖拽缩放
+    if (e->button() == Qt::LeftButton) {
+        const int resizeHandle = objectResizeHandleAt(e->pos());
+        if (resizeHandle > 0 && activeToolObject()) {
+            m_objectResizing = true;
+            m_objectResizeHandle = resizeHandle;
+            m_objectStartRect = activeToolObject()->boundingRect().normalized();
+            m_objectResizeStartPos = e->pos();
+            e->accept();
+            return;
+        }
+    }
+
     updateSelectionState();
     updateCursor();
 }
@@ -1183,6 +1207,35 @@ void CaptureWidget::mouseDoubleClickEvent(QMouseEvent* event)
 
 void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
 {
+    // flameshot-ocr: 选中对象的角点拖拽缩放
+    if (m_objectResizing) {
+        CaptureTool* object = activeToolObject().data();
+        if (object) {
+            const QPoint delta = e->pos() - m_objectResizeStartPos;
+            QRect newRect = m_objectStartRect;
+            if (m_objectResizeHandle & 1) {
+                newRect.setLeft(newRect.left() + delta.x());
+            }
+            if (m_objectResizeHandle & 2) {
+                newRect.setRight(newRect.right() + delta.x());
+            }
+            if (m_objectResizeHandle & 4) {
+                newRect.setTop(newRect.top() + delta.y());
+            }
+            if (m_objectResizeHandle & 8) {
+                newRect.setBottom(newRect.bottom() + delta.y());
+            }
+            newRect = newRect.normalized();
+            if (newRect.width() >= 8 && newRect.height() >= 8) {
+                scaleToolToRect(object, m_objectStartRect, newRect);
+                drawObjectSelection();
+                update(paddedUpdateRect(object->boundingRect()));
+            }
+        }
+        e->accept();
+        return;
+    }
+
     if (m_magnifier) {
         if (!m_activeButton) {
             m_magnifier->show();
@@ -1299,6 +1352,7 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
     }
     m_mouseIsClicked = false;
     m_activeToolIsMoved = false;
+    m_objectResizing = false;
 
     updateSelectionState();
     updateCursor();
@@ -1355,6 +1409,65 @@ void CaptureWidget::keyPressEvent(QKeyEvent* e)
         QCoreApplication::postEvent(
           this,
           new QKeyEvent(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier));
+    }
+}
+
+// flameshot-ocr: 对象缩放辅助 —— 命中测试与点位等比缩放
+int CaptureWidget::objectResizeHandleAt(const QPoint& pos)
+{
+    if (m_eraserActive || m_panel->activeLayerIndex() < 0) {
+        return -1;
+    }
+    auto object = activeToolObject();
+    if (!object) {
+        return -1;
+    }
+    const QRect rect = object->boundingRect().normalized();
+    const int margin = 8;
+    int handle = 0;
+    if (qAbs(pos.x() - rect.left()) <= margin) {
+        handle |= 1;
+    }
+    if (qAbs(pos.x() - rect.right()) <= margin) {
+        handle |= 2;
+    }
+    if (qAbs(pos.y() - rect.top()) <= margin) {
+        handle |= 4;
+    }
+    if (qAbs(pos.y() - rect.bottom()) <= margin) {
+        handle |= 8;
+    }
+    // 同时命中左右或上下视为无效
+    if (handle == 0 || handle == 3 || handle == 12) {
+        return -1;
+    }
+    return handle;
+}
+
+void CaptureWidget::scaleToolToRect(CaptureTool* tool,
+                                    const QRect& from,
+                                    const QRect& to)
+{
+    if (!tool || from.width() <= 0 || from.height() <= 0) {
+        return;
+    }
+    const qreal scaleX = qreal(to.width()) / from.width();
+    const qreal scaleY = qreal(to.height()) / from.height();
+    auto mapPoint = [&](const QPoint& p) {
+        return QPoint(to.left() + int((p.x() - from.left()) * scaleX),
+                      to.top() + int((p.y() - from.top()) * scaleY));
+    };
+    if (auto* twoPointTool = dynamic_cast<AbstractTwoPointTool*>(tool)) {
+        const auto points = twoPointTool->points();
+        twoPointTool->setPoints({ mapPoint(points.first),
+                                  mapPoint(points.second) });
+    } else if (auto* pathTool = dynamic_cast<AbstractPathTool*>(tool)) {
+        QVector<QPoint> mapped;
+        mapped.reserve(pathTool->points().size());
+        for (const QPoint& p : pathTool->points()) {
+            mapped.append(mapPoint(p));
+        }
+        pathTool->setPoints(mapped);
     }
 }
 
@@ -2086,6 +2199,18 @@ void CaptureWidget::updateCursor()
         setCursor(Qt::PointingHandCursor);
         return;
     }
+    // flameshot-ocr: 标注对象悬停光标（手柄=缩放，对象=移动）
+    if (!m_activeButton && !m_mouseIsClicked) {
+        const QPoint cursorPos = mapFromGlobal(QCursor::pos());
+        if (objectResizeHandleAt(cursorPos) > 0) {
+            setCursor(Qt::SizeFDiagCursor);
+            return;
+        }
+        if (m_captureToolObjects.find(cursorPos, size()) >= 0) {
+            setCursor(Qt::SizeAllCursor);
+            return;
+        }
+    }
     if (m_colorPicker && m_colorPicker->isVisible()) {
         setCursor(Qt::ArrowCursor);
     } else if (m_activeButton != nullptr &&
@@ -2202,6 +2327,19 @@ void CaptureWidget::drawObjectSelection()
     if (toolItem && !toolItem->editMode()) {
         QPainter painter(&m_context.screenshot);
         toolItem->drawObjectSelection(painter);
+        // flameshot-ocr: 四角缩放手柄
+        if (!m_eraserActive) {
+            const QRect handleRect = toolItem->boundingRect().normalized();
+            painter.setPen(QPen(Qt::white, 1));
+            painter.setBrush(ConfigHandler().uiColor());
+            for (const QPoint& corner :
+                 { handleRect.topLeft(),
+                   handleRect.topRight(),
+                   handleRect.bottomLeft(),
+                   handleRect.bottomRight() }) {
+                painter.drawRect(QRect(corner - QPoint(4, 4), QSize(8, 8)));
+            }
+        }
         // TODO move this elsewhere
         if (m_context.toolSize != toolItem->size()) {
             m_context.toolSize = toolItem->size();
