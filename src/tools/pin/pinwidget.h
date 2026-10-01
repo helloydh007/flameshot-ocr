@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include "pinannotator.h"
+#include <QPair>
+#include <QVector>
 #include <QWidget>
 
 class QLabel;
@@ -11,8 +14,8 @@ class QGestureEvent;
 class QPinchGesture;
 class QGraphicsDropShadowEffect;
 class OcrPanel;
-class PinAnnotator;
 class QResizeEvent;
+class QToolButton;
 
 class PinWidget : public QWidget
 {
@@ -43,6 +46,7 @@ private:
     // 带标注合成的最终图像（复制/保存用）
     QPixmap compositedPixmap() const;
     void positionAnnotator();
+    void buildToolBar();
 
     void rotateLeft();
     void rotateRight();
@@ -56,6 +60,9 @@ private:
     QGraphicsDropShadowEffect* m_shadowEffect;
     OcrPanel* m_ocrPanel = nullptr;
     PinAnnotator* m_annotator = nullptr;
+    QWidget* m_toolBarRow = nullptr;
+    QToolButton* m_colorButton = nullptr;
+    QVector<QPair<PinAnnotator::Tool, QToolButton*>> m_toolButtons;
     QColor m_baseColor, m_hoverColor;
 
     bool m_expanding{ false };

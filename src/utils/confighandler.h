@@ -139,6 +139,7 @@ public:
     CONFIG_GETTER_SETTER(reverseArrow, setReverseArrow, bool)
     CONFIG_GETTER_SETTER(insecurePixelate, setInsecurePixelate, bool)
     CONFIG_GETTER_SETTER(ocrCommand, setOcrCommand, QString)
+    CONFIG_GETTER_SETTER(colorPickFormat, setColorPickFormat, QString)
     CONFIG_GETTER_SETTER(showSelectionGeometryHideTime,
                          showSelectionGeometryHideTime,
                          int)

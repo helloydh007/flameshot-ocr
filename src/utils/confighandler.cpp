@@ -133,13 +133,15 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     // drawFontSize, remember to update ConfigHandler::toolSize
     OPTION("copyOnDoubleClick"           ,Bool               ( false         )),
     OPTION("uploadClientSecret"          ,String             ( "313baf0c7b4d3ff" )),
-    OPTION("showSelectionGeometry"       , BoundedInt        ( 0, 5, 4       )),
+    OPTION("showSelectionGeometry"       , BoundedInt        ( 0, 5, 1       )),
     OPTION("showSelectionGeometryHideTime", LowerBoundedInt  ( 0, 3000       )),
     OPTION("jpegQuality"                 , BoundedInt        ( 0,100,75      )),
     OPTION("reverseArrow"                ,Bool               ( false         )),
     OPTION("insecurePixelate"            ,Bool               ( false         )),
     // flameshot-ocr: command template for the OCR tool, %i = input image path
     OPTION("ocrCommand"                  ,String             ( "tesseract %i stdout -l chi_sim+eng --psm 6" )),
+    // flameshot-ocr: color pick copy format: "hex" (#RRGGBB) or "rgb" (r, g, b)
+    OPTION("colorPickFormat"             ,String             ( "hex"         )),
 };
 
 static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {

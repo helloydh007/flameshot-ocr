@@ -12,6 +12,7 @@ target_sources(
         magnifierwidget.h
         notifierbox.h
         ocrpanel.h
+        pretoolbar.h
         modificationcommand.h)
 
 target_sources(
@@ -25,6 +26,7 @@ target_sources(
         overlaymessage.cpp
         notifierbox.cpp
         ocrpanel.cpp
+        pretoolbar.cpp
         selectionwidget.cpp
         magnifierwidget.cpp
         modificationcommand.cpp)

@@ -15,11 +15,14 @@
 #include "src/widgets/capture/ocrpanel.h"
 
 #include <QActionGroup>
+#include <QActionGroup>
+#include <QFrame>
 #include <QLabel>
 #include <QMenu>
 #include <QPainter>
 #include <QScreen>
 #include <QShortcut>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -118,10 +121,163 @@ PinWidget::PinWidget(const QPixmap& pixmap,
             &PinWidget::showContextMenu);
     positionAnnotator();
     m_annotator->raise();
+    buildToolBar();
 
     new QShortcut(QKeySequence::Undo, this, [this]() {
         m_annotator->undo();
     });
+}
+
+void PinWidget::buildToolBar()
+{
+    m_toolBarRow = new QWidget(this);
+    m_toolBarRow->setObjectName(QStringLiteral("pinToolBar"));
+    auto* layout = new QHBoxLayout(m_toolBarRow);
+    layout->setContentsMargins(6, 2, 6, 2);
+    layout->setSpacing(2);
+
+    auto syncTools = [this]() {
+        const PinAnnotator::Tool current = m_annotator->tool();
+        for (const auto& entry : m_toolButtons) {
+            entry.second->setChecked(entry.first == current);
+        }
+    };
+
+    auto addToolButton = [&](const QString& label, const QString& tip,
+                             PinAnnotator::Tool tool) {
+        auto* button = new QToolButton(m_toolBarRow);
+        button->setText(label);
+        button->setToolTip(tip);
+        button->setCheckable(true);
+        button->setChecked(tool == m_annotator->tool());
+        button->setCursor(Qt::PointingHandCursor);
+        connect(button, &QToolButton::clicked, this,
+                [this, tool, syncTools]() {
+                    m_annotator->setTool(tool);
+                    syncTools();
+                });
+        layout->addWidget(button);
+        m_toolButtons.append({ tool, button });
+    };
+
+    addToolButton(QStringLiteral("移"),
+                  OcrPanel::tr2("移动钉图", "Move pin"), PinAnnotator::None);
+    addToolButton(QStringLiteral("画"), OcrPanel::tr2("画笔", "Pen"),
+                  PinAnnotator::Pencil);
+    addToolButton(QStringLiteral("荧"), OcrPanel::tr2("荧光笔", "Marker"),
+                  PinAnnotator::Marker);
+    addToolButton(QStringLiteral("箭"), OcrPanel::tr2("箭头", "Arrow"),
+                  PinAnnotator::Arrow);
+    addToolButton(QStringLiteral("矩"), OcrPanel::tr2("矩形", "Rectangle"),
+                  PinAnnotator::Rectangle);
+    addToolButton(QStringLiteral("椭"), OcrPanel::tr2("椭圆", "Ellipse"),
+                  PinAnnotator::Ellipse);
+    addToolButton(QStringLiteral("线"), OcrPanel::tr2("直线", "Line"),
+                  PinAnnotator::Line);
+
+    // 颜色下拉
+    m_colorButton = new QToolButton(m_toolBarRow);
+    m_colorButton->setToolTip(OcrPanel::tr2("颜色", "Color"));
+    m_colorButton->setCursor(Qt::PointingHandCursor);
+    m_colorButton->setPopupMode(QToolButton::InstantPopup);
+    auto updateColorIcon = [this](const QColor& color) {
+        QPixmap swatch(16, 16);
+        swatch.fill(color);
+        m_colorButton->setIcon(QIcon(swatch));
+        m_colorButton->setIconSize(QSize(16, 16));
+    };
+    updateColorIcon(m_annotator->color());
+    auto* colorMenu = new QMenu(m_colorButton);
+    const QVector<QPair<QString, QColor>> colors = {
+        { OcrPanel::tr2("红色", "Red"), QColor(255, 59, 48) },
+        { OcrPanel::tr2("黄色", "Yellow"), QColor(255, 204, 0) },
+        { OcrPanel::tr2("绿色", "Green"), QColor(52, 199, 89) },
+        { OcrPanel::tr2("青色", "Cyan"), QColor(0, 199, 190) },
+        { OcrPanel::tr2("蓝色", "Blue"), QColor(0, 122, 255) },
+        { OcrPanel::tr2("紫色", "Purple"), QColor(175, 82, 222) },
+        { OcrPanel::tr2("黑色", "Black"), QColor(17, 17, 17) },
+        { OcrPanel::tr2("白色", "White"), QColor(255, 255, 255) },
+    };
+    for (const auto& entry : colors) {
+        QPixmap swatch(14, 14);
+        swatch.fill(entry.second);
+        QAction* action = colorMenu->addAction(QIcon(swatch), entry.first);
+        connect(action, &QAction::triggered, this,
+                [this, entry, updateColorIcon]() {
+                    m_annotator->setColor(entry.second);
+                    updateColorIcon(entry.second);
+                });
+    }
+    m_colorButton->setMenu(colorMenu);
+    layout->addWidget(m_colorButton);
+
+    // 粗细下拉
+    auto* widthButton = new QToolButton(m_toolBarRow);
+    widthButton->setText(QStringLiteral("粗"));
+    widthButton->setToolTip(OcrPanel::tr2("粗细", "Width"));
+    widthButton->setCursor(Qt::PointingHandCursor);
+    widthButton->setPopupMode(QToolButton::InstantPopup);
+    auto* widthMenu = new QMenu(widthButton);
+    const QVector<QPair<QString, int>> widths = {
+        { OcrPanel::tr2("细", "Thin"), 2 },
+        { OcrPanel::tr2("中", "Medium"), 4 },
+        { OcrPanel::tr2("粗", "Thick"), 8 },
+    };
+    for (const auto& entry : widths) {
+        QAction* action = widthMenu->addAction(entry.first);
+        action->setCheckable(true);
+        action->setChecked(m_annotator->width() == entry.second);
+        connect(action, &QAction::triggered, this,
+                [this, entry]() { m_annotator->setWidth(entry.second); });
+    }
+    widthButton->setMenu(widthMenu);
+    layout->addWidget(widthButton);
+
+    auto addActionButton = [&](const QString& label, const QString& tip,
+                               std::function<void()> fn) {
+        auto* button = new QToolButton(m_toolBarRow);
+        button->setText(label);
+        button->setToolTip(tip);
+        button->setAutoRaise(true);
+        button->setCursor(Qt::PointingHandCursor);
+        connect(button, &QToolButton::clicked, this, [fn]() { fn(); });
+        layout->addWidget(button);
+    };
+    addActionButton(QStringLiteral("↶"),
+                    OcrPanel::tr2("撤销标注 (Ctrl+Z)", "Undo (Ctrl+Z)"),
+                    [this]() { m_annotator->undo(); });
+    addActionButton(QStringLiteral("清"),
+                    OcrPanel::tr2("清空标注", "Clear annotations"),
+                    [this]() { m_annotator->clearShapes(); });
+
+    auto* separator = new QFrame(m_toolBarRow);
+    separator->setFrameShape(QFrame::VLine);
+    separator->setStyleSheet(QStringLiteral("color: #3f3f46;"));
+    layout->addWidget(separator);
+
+    addActionButton(QStringLiteral("OCR"),
+                    OcrPanel::tr2("文字识别", "OCR"),
+                    [this]() { runOcr(); });
+    addActionButton(QStringLiteral("复"),
+                    OcrPanel::tr2("复制到剪贴板（含标注）",
+                                  "Copy to clipboard (with annotations)"),
+                    [this]() { copyToClipboard(); });
+    addActionButton(QStringLiteral("存"),
+                    OcrPanel::tr2("保存到文件（含标注）",
+                                  "Save to file (with annotations)"),
+                    [this]() { saveToFile(); });
+    addActionButton(QStringLiteral("✕"), OcrPanel::tr2("关闭", "Close"),
+                    [this]() { closePin(); });
+
+    m_toolBarRow->setStyleSheet(QStringLiteral(
+      "#pinToolBar { background-color: #1a1a1fee; "
+      "border: 1px solid #3f3f46; border-top: none; "
+      "border-radius: 0 0 8px 8px; }"
+      "#pinToolBar QToolButton { color: #d6d6dc; background: transparent; "
+      "border: none; border-radius: 4px; padding: 2px 8px; font-size: 12px; }"
+      "#pinToolBar QToolButton:hover { background: #3f3f46; color: #ffffff; }"
+      "#pinToolBar QToolButton:checked { background: #5842a3; "
+      "color: #ffffff; }"));
 }
 
 void PinWidget::closePin()

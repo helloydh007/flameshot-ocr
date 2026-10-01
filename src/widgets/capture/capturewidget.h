@@ -21,6 +21,7 @@
 #include "src/widgets/capture/magnifierwidget.h"
 #include "src/widgets/capture/selectionwidget.h"
 #include <QMessageBox>
+#include <QHash>
 #include <QPointer>
 #include <QProcess>
 #include <QTimer>
@@ -44,6 +45,8 @@ class UtilityPanel;
 class SidePanelWidget;
 class OcrPanel;
 class QTemporaryFile;
+class PreToolbar;
+class ColorGrabWidget;
 
 class CaptureWidget : public QWidget
 {
@@ -96,6 +99,14 @@ private slots:
     void onGridSizeChanged(int size);
 
     void startColorGrab();
+    void openColorGrab();
+    void onColorGrabbed();
+    void onColorGrabAborted();
+    void fullscreenCopy();
+    void saveFullCapture();
+    void openSettings();
+    void updatePreToolbar();
+    void positionPreToolbar();
 
 public:
     void removeToolObject(int index = -1);
@@ -173,6 +184,11 @@ private:
     OcrPanel* m_ocrPanel = nullptr;
     QProcess* m_ocrProcess = nullptr;
     QTemporaryFile* m_ocrTempFile = nullptr;
+
+    // flameshot-ocr: Win11 风格预选区悬浮工具条 + 取色器
+    PreToolbar* m_preToolbar = nullptr;
+    ColorGrabWidget* m_colorGrabber = nullptr;
+    QHash<CaptureTool::Type, CaptureToolButton*> m_buttonsByType;
 
     // Main ui color
     QColor m_uiColor;

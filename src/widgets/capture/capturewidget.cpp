@@ -23,6 +23,9 @@
 #include "src/widgets/capture/modificationcommand.h"
 #include "src/widgets/capture/notifierbox.h"
 #include "src/widgets/capture/ocrpanel.h"
+#include "src/widgets/capture/pretoolbar.h"
+#include "src/widgets/panel/colorgrabwidget.h"
+#include "src/config/configwindow.h"
 #include "src/widgets/capture/overlaymessage.h"
 #include "src/widgets/orientablepushbutton.h"
 #include "src/widgets/panel/sidepanelwidget.h"
@@ -36,6 +39,8 @@
 #include <QPainter>
 #include <QScreen>
 #include <QShortcut>
+#include <QClipboard>
+#include <QToolTip>
 #include <QImage>
 #include <QProcess>
 #include <QRegularExpression>
@@ -294,6 +299,50 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
 
     updateCursor();
 
+    // flameshot-ocr: Win11 风格预选区悬浮工具条
+    m_preToolbar = new PreToolbar(this);
+    connect(m_preToolbar,
+            &PreToolbar::selectModeRequested,
+            this,
+            [this]() {
+                if (m_activeButton) {
+                    uncheckActiveTool();
+                }
+                m_preToolbar->setToolChecked(CaptureTool::NONE);
+                updatePreToolbar();
+            });
+    connect(m_preToolbar,
+            &PreToolbar::toolRequested,
+            this,
+            [this](CaptureTool::Type type) {
+                if (auto* button = m_buttonsByType.value(type)) {
+                    setState(button);
+                }
+                m_preToolbar->setToolChecked(type);
+            });
+    connect(m_preToolbar,
+            &PreToolbar::drawColorChanged,
+            this,
+            &CaptureWidget::setDrawColor);
+    connect(m_preToolbar,
+            &PreToolbar::colorGrabRequested,
+            this,
+            &CaptureWidget::openColorGrab);
+    connect(m_preToolbar,
+            &PreToolbar::fullscreenCopyRequested,
+            this,
+            &CaptureWidget::fullscreenCopy);
+    connect(m_preToolbar,
+            &PreToolbar::saveRequested,
+            this,
+            &CaptureWidget::saveFullCapture);
+    connect(m_preToolbar,
+            &PreToolbar::settingsRequested,
+            this,
+            &CaptureWidget::openSettings);
+    m_preToolbar->show();
+    positionPreToolbar();
+
     // flameshot-ocr: automated test hook — run OCR shortly after the GUI shows.
     // FLAMESHOT_OCR_AUTOTEST=1: whole-screen OCR; =2: half-screen selection
     // first (so the tool button bar is visible), then OCR.
@@ -396,6 +445,7 @@ void CaptureWidget::initButtons()
         }
 
         m_tools[t] = b->tool();
+        m_buttonsByType[t] = b;
 
         connect(b->tool(),
                 &CaptureTool::requestAction,
@@ -470,6 +520,119 @@ void CaptureWidget::startColorGrab()
 {
     if (m_sidePanel) {
         m_sidePanel->startColorGrab();
+    }
+}
+
+// flameshot-ocr: 预选区悬浮工具条 —— 显隐与位置
+void CaptureWidget::updatePreToolbar()
+{
+    if (!m_preToolbar) {
+        return;
+    }
+    const bool grabbing = m_colorGrabber && m_colorGrabber->isVisible();
+    const bool show =
+      !m_selection->isVisible() && !m_mouseIsClicked && !grabbing;
+    m_preToolbar->setVisible(show);
+    if (show) {
+        positionPreToolbar();
+    }
+}
+
+void CaptureWidget::positionPreToolbar()
+{
+    if (!m_preToolbar) {
+        return;
+    }
+    m_preToolbar->adjustSize();
+    const QSize size = m_preToolbar->size();
+    m_preToolbar->move(qMax(0, (width() - size.width()) / 2), 12);
+}
+
+// flameshot-ocr: 取色（按 colorPickFormat 自动复制）
+void CaptureWidget::openColorGrab()
+{
+    if (m_colorGrabber) {
+        return;
+    }
+    m_preToolbar->hide();
+    m_colorGrabber = new ColorGrabWidget(&m_context.origScreenshot, this);
+    connect(m_colorGrabber,
+            &ColorGrabWidget::colorGrabbed,
+            this,
+            &CaptureWidget::onColorGrabbed);
+    connect(m_colorGrabber,
+            &ColorGrabWidget::grabAborted,
+            this,
+            &CaptureWidget::onColorGrabAborted);
+    m_colorGrabber->startGrabbing();
+}
+
+void CaptureWidget::onColorGrabbed()
+{
+    if (!m_colorGrabber) {
+        return;
+    }
+    const QColor color = m_colorGrabber->color();
+    m_colorGrabber->deleteLater();
+    m_colorGrabber = nullptr;
+
+    QString text;
+    if (ConfigHandler().colorPickFormat() == QLatin1String("rgb")) {
+        text = QStringLiteral("%1, %2, %3")
+                 .arg(color.red())
+                 .arg(color.green())
+                 .arg(color.blue());
+    } else {
+        text = color.name(QColor::HexRgb);
+    }
+    QApplication::clipboard()->setText(text);
+    QToolTip::showText(mapToGlobal(m_context.mousePos),
+                       OcrPanel::tr2("已复制颜色：", "Copied color: ") + text,
+                       this);
+    updatePreToolbar();
+}
+
+void CaptureWidget::onColorGrabAborted()
+{
+    if (m_colorGrabber) {
+        m_colorGrabber->deleteLater();
+        m_colorGrabber = nullptr;
+    }
+    updatePreToolbar();
+}
+
+// flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口
+void CaptureWidget::fullscreenCopy()
+{
+    if (m_activeTool) {
+        commitCurrentTool();
+    }
+    m_context.selection = QRect();
+    m_context.request.addTask(CaptureRequest::COPY);
+    handleToolSignal(CaptureTool::REQ_CAPTURE_DONE_OK);
+    close();
+}
+
+void CaptureWidget::saveFullCapture()
+{
+    if (m_activeTool) {
+        commitCurrentTool();
+    }
+    m_context.selection = QRect();
+    m_context.request.addTask(CaptureRequest::SAVE);
+    handleToolSignal(CaptureTool::REQ_CAPTURE_DONE_OK);
+    close();
+}
+
+void CaptureWidget::openSettings()
+{
+    Flameshot::instance()->config();
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (auto* configWindow = qobject_cast<ConfigWindow*>(widget)) {
+            configWindow->show();
+            configWindow->raise();
+            configWindow->activateWindow();
+        }
     }
 }
 
@@ -702,11 +865,9 @@ void CaptureWidget::paintEvent(QPaintEvent* paintEvent)
         QFontMetrics fm = painter.fontMetrics();
 
         QString xy =
-          QString("%1x%2+%3+%4")
+          QStringLiteral("%1 × %2 px")
             .arg(QString::number(static_cast<int>(selection.width() * scale)),
-                 QString::number(static_cast<int>(selection.height() * scale)),
-                 QString::number(static_cast<int>(selection.left() * scale)),
-                 QString::number(static_cast<int>(selection.top() * scale)));
+                 QString::number(static_cast<int>(selection.height() * scale)));
 
         xybox = fm.boundingRect(xy);
         // the small numbers here are just margins so the text doesn't
@@ -719,8 +880,12 @@ void CaptureWidget::paintEvent(QPaintEvent* paintEvent)
 
         switch (position) {
             case GeneralConf::xywh_top_left:
+                // 左上角：贴在选区外上方，空间不足时退到选区内侧
                 x0 = selection.left();
-                y0 = selection.top();
+                y0 = selection.top() - xybox.height() - 6;
+                if (y0 < 0) {
+                    y0 = selection.top() + 6;
+                }
                 break;
             case GeneralConf::xywh_bottom_left:
                 x0 = selection.left();
@@ -893,6 +1058,9 @@ int CaptureWidget::selectToolItemAtPos(const QPoint& pos)
 void CaptureWidget::mousePressEvent(QMouseEvent* e)
 {
     activateWindow();
+    if (m_preToolbar && m_preToolbar->isVisible()) {
+        m_preToolbar->hide();
+    }
     if (m_ocrPanel && m_ocrPanel->isVisible()) {
         if (m_ocrPanel->geometry().contains(e->pos())) {
             // 面板区域的事件应由面板处理，兜底防止隐藏面板/触发取色器
@@ -1085,6 +1253,7 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
 
     updateSelectionState();
     updateCursor();
+    updatePreToolbar();
 }
 
 /**
@@ -1190,6 +1359,7 @@ void CaptureWidget::resizeEvent(QResizeEvent* e)
         m_panel->setFixedHeight(height());
         m_buttonHandler->updateScreenRegions(rect());
     }
+    positionPreToolbar();
 }
 
 void CaptureWidget::moveEvent(QMoveEvent* e)
