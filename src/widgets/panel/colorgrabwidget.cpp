@@ -259,7 +259,23 @@ void ColorGrabWidget::updateWidget()
     }
 #endif
 
-    rect.moveCenter(cursorPos());
+    // flameshot-ocr: 放大镜偏置在光标右下方（不遮挡取色点/放置点），
+    // 贴近屏幕右/下边缘时自动翻到另一侧
+    const QPoint cur = cursorPos();
+    const int offset = 18;
+    QPoint topLeft = cur + QPoint(offset, offset);
+    if (QScreen* scr = QGuiAppCurrentScreen().currentScreen()) {
+        const QRect avail = scr->geometry();
+        if (topLeft.x() + width > avail.right()) {
+            topLeft.setX(cur.x() - offset - width);
+        }
+        if (topLeft.y() + width > avail.bottom()) {
+            topLeft.setY(cur.y() - offset - width);
+        }
+        topLeft.setX(qMax(avail.left(), topLeft.x()));
+        topLeft.setY(qMax(avail.top(), topLeft.y()));
+    }
+    rect.moveTo(topLeft);
     setGeometry(rect);
     // Store a pixmap containing the zoomed-in section around the cursor
     QRect sourceRect(0, 0, width / zoom, width / zoom);

@@ -139,7 +139,9 @@ private:
     int selectToolItemAtPos(const QPoint& pos);
     int objectResizeHandleAt(const QPoint& pos);
     int resizeHandleForRect(const QRect& rect, const QPoint& pos);
+    int resizeGrabHandleAt(const QRect& rect, const QPoint& pos);
     int objectIndexWithGrabZone(const QPoint& pos);
+    int objectIndexContainingPoint(const QPoint& pos);
     void scaleToolToRect(CaptureTool* tool, const QRect& from, const QRect& to);
     void showColorPicker(const QPoint& pos);
     bool startDrawObjectTool(const QPoint& pos);

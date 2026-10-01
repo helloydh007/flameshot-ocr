@@ -774,6 +774,48 @@ void CaptureWidget::runSelfTest()
                                                                 : "FAIL")
                << ellipseBefore << "->" << ellipseAfter;
 
+    // 3h: 空心矩形内部按压拖动 → 整体平移（修复“方框不能拖动”）
+    setState(m_buttonsByType.value(CaptureTool::TYPE_RECTANGLE));
+    synthMousePress(QPoint(400, 700));
+    synthMouseMove(QPoint(520, 780));
+    synthMouseRelease(QPoint(520, 780));
+    const QRect mvBefore = lastRect();
+    const QPoint mvCenter = mvBefore.center();
+    synthMousePress(mvCenter);
+    synthMouseMove(mvCenter + QPoint(20, 15));
+    synthMouseMove(mvCenter + QPoint(80, 60));
+    synthMouseMove(mvCenter + QPoint(120, 90));
+    synthMouseRelease(mvCenter + QPoint(120, 90));
+    const QRect mvAfter = lastRect();
+    const QPoint shift = mvAfter.topLeft() - mvBefore.topLeft();
+    qWarning() << "SELFTEST 3h rect-move-by-interior-drag:"
+               << ((shift.manhattanLength() >= 50 &&
+                    qAbs(mvAfter.width() - mvBefore.width()) <= 2 &&
+                    qAbs(mvAfter.height() - mvBefore.height()) <= 2)
+                     ? "PASS"
+                     : "FAIL")
+               << mvBefore << "->" << mvAfter << "shift:" << shift;
+
+    // 3i: 缩放灵敏度系数生效（默认 50%：拖 +100px 只放大 ~50px）
+    {
+        const int sensitivity =
+          qBound(10, ConfigHandler().resizeSensitivity(), 100);
+        const QRect gainBefore = lastRect();
+        synthMousePress(
+          QPoint(gainBefore.right() + 3, gainBefore.center().y()));
+        synthMouseMove(
+          QPoint(gainBefore.right() + 103, gainBefore.center().y()));
+        synthMouseRelease(
+          QPoint(gainBefore.right() + 103, gainBefore.center().y()));
+        const QRect gainAfter = lastRect();
+        const int expected = 100 * sensitivity / 100;
+        const int actual = gainAfter.width() - gainBefore.width();
+        qWarning() << "SELFTEST 3i resize-gain-applied:"
+                   << (qAbs(actual - expected) <= 6 ? "PASS" : "FAIL")
+                   << "sensitivity:" << sensitivity << "expected~"
+                   << expected << "actual:" << actual;
+    }
+
     // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
     {
         // 取色放大镜：startGrabbing 后无需移动鼠标即应可见
@@ -1508,7 +1550,8 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
             if (candidate) {
                 const QRect candidateRect =
                   candidate->boundingRect().normalized();
-                const int handle = resizeHandleForRect(candidateRect, e->pos());
+                const int handle =
+                  resizeGrabHandleAt(candidateRect, e->pos());
                 if (handle > 0) {
                     if (m_panel->activeLayerIndex() != candidateIndex) {
                         m_panel->setActiveLayer(candidateIndex);
@@ -1566,6 +1609,17 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
 
     selectToolItemAtPos(m_mousePressedPos);
 
+    // flameshot-ocr: 空心形状内部点击也能选中（find() 基于已绘制像素，
+    // 轮廓内部会落空），选中后即可拖动移动
+    if (m_panel->activeLayerIndex() < 0 && e->button() == Qt::LeftButton &&
+        !m_eraserActive && m_activeButton.isNull()) {
+        const int interiorIndex = objectIndexContainingPoint(m_mousePressedPos);
+        if (interiorIndex >= 0) {
+            m_panel->setActiveLayer(interiorIndex);
+            drawObjectSelection();
+        }
+    }
+
     updateSelectionState();
     updateCursor();
 }
@@ -1612,7 +1666,13 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
             // 与上游移动对象相同的重绘模式：失效旧区域 → 改对象 →
             // drawToolsData 从原图重画（清残影）→ 再画选择框 → 失效新区域
             update(paddedUpdateRect(object->boundingRect()));
-            const QPoint delta = e->pos() - m_objectResizeStartPos;
+            // flameshot-ocr: 缩放灵敏度（默认 50%，拖得比鼠标慢，更易精调；
+            // 可在 flameshot.ini 的 resizeSensitivity 调整，10-100）
+            const int sensitivity =
+              qBound(10, ConfigHandler().resizeSensitivity(), 100);
+            const QPoint rawDelta = e->pos() - m_objectResizeStartPos;
+            const QPoint delta(rawDelta.x() * sensitivity / 100,
+                               rawDelta.y() * sensitivity / 100);
             QRect newRect = m_objectStartRect;
             if (m_objectResizeHandle & 1) {
                 newRect.setLeft(newRect.left() + delta.x());
@@ -1842,14 +1902,14 @@ int CaptureWidget::objectResizeHandleAt(const QPoint& pos)
     return resizeHandleForRect(object->boundingRect().normalized(), pos);
 }
 
-// 手柄判定：距离任一边 <= 10px 即命中该边（左右/上下同时命中视为无效）；
+// 手柄判定：距离任一边 <= 12px 即命中该边（左右/上下同时命中视为无效）；
 // 该判定同时用于“框内贴边”和“框外贴边”，保证放大与缩小两个方向都能抓住
 int CaptureWidget::resizeHandleForRect(const QRect& rect, const QPoint& pos)
 {
     if (rect.isNull()) {
         return -1;
     }
-    const int margin = 10;
+    const int margin = 12;
     int handle = 0;
     if (qAbs(pos.x() - rect.left()) <= margin) {
         handle |= 1;
@@ -1883,6 +1943,37 @@ int CaptureWidget::objectIndexWithGrabZone(const QPoint& pos)
               .normalized()
               .adjusted(-zone, -zone, zone, zone)
               .contains(pos)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// 实际可触发的缩放手柄：框外任意边/角均可抓取；
+// 框内仅角点（同时贴近两条边）触发缩放，边中部让位给“拖动移动”，
+// 否则小方框的整个区域都是缩放热区、无法拖动
+int CaptureWidget::resizeGrabHandleAt(const QRect& rect, const QPoint& pos)
+{
+    const int handle = resizeHandleForRect(rect, pos);
+    if (handle <= 0) {
+        return -1;
+    }
+    if (!rect.contains(pos)) {
+        return handle;
+    }
+    const bool corner =
+      (handle == 5 || handle == 6 || handle == 9 || handle == 10);
+    return corner ? handle : -1;
+}
+
+// 包围盒内部命中的最上层对象（空心形状内部无绘制像素，find() 会落空，
+// 用包围盒补充判定，使空心方框内部也能点选/拖动）
+int CaptureWidget::objectIndexContainingPoint(const QPoint& pos)
+{
+    const auto objects = m_captureToolObjects.captureToolObjects();
+    for (int i = objects.size() - 1; i >= 0; --i) {
+        auto object = objects.at(i);
+        if (object && object->boundingRect().normalized().contains(pos)) {
             return i;
         }
     }
@@ -2668,13 +2759,14 @@ void CaptureWidget::updateCursor()
         if (hoverIndex >= 0) {
             auto hoverObject = m_captureToolObjects.at(hoverIndex);
             if (hoverObject &&
-                resizeHandleForRect(hoverObject->boundingRect().normalized(),
-                                    cursorPos) > 0) {
+                resizeGrabHandleAt(hoverObject->boundingRect().normalized(),
+                                   cursorPos) > 0) {
                 setCursor(Qt::SizeFDiagCursor);
                 return;
             }
         }
-        if (m_captureToolObjects.find(cursorPos, size()) >= 0) {
+        if (m_captureToolObjects.find(cursorPos, size()) >= 0 ||
+            objectIndexContainingPoint(cursorPos) >= 0) {
             setCursor(Qt::SizeAllCursor);
             return;
         }
