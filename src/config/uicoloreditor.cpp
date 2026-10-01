@@ -5,10 +5,12 @@
 #include "clickablelabel.h"
 #include "src/utils/confighandler.h"
 #include "src/utils/globalvalues.h"
+#include "src/widgets/capture/ocrpanel.h"
 #include <QApplication>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QMap>
+#include <QPushButton>
 #include <QSpacerItem>
 #include <QVBoxLayout>
 
@@ -145,6 +147,18 @@ void UIcolorEditor::initButtons()
         changeLastButton(m_buttonContrast);
     });
     m_lastButtonPressed = m_buttonMainColor;
+
+    // flameshot-ocr: 一键恢复默认配色
+    auto* resetButton = new QPushButton(
+      OcrPanel::tr2("恢复默认颜色", "Restore default colors"), this);
+    resetButton->setCursor(Qt::PointingHandCursor);
+    connect(resetButton, &QPushButton::clicked, this, [this]() {
+        ConfigHandler config;
+        config.setUiColor(QColor(116, 0, 150));
+        config.setContrastUiColor(QColor(39, 0, 50));
+        updateComponents();
+    });
+    m_vLayout->addWidget(resetButton);
 }
 
 // visual update for the selected button

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 flameshot-ocr contributors
 
 #include "ocrpanel.h"
+#include "src/utils/confighandler.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
@@ -128,20 +129,22 @@ OcrPanel::OcrPanel(QWidget* parent)
                 }
             });
 
+    const QString accent = ConfigHandler().uiColor().name();
     setStyleSheet(QStringLiteral(
       "#ocrTitle { color: #e6e6e6; font-weight: bold; font-size: 13px; }"
       "#ocrText { background-color: #26262b; color: #ececec; border: none; "
       "border-radius: 6px; padding: 6px; font-size: 13px; "
-      "selection-background-color: #5842a3; }"
+      "selection-background-color: %1; }"
       "#ocrStatus { color: #9a9aa2; font-size: 11px; }"
       "#ocrMin, #ocrClose { color: #9a9aa2; background: transparent; "
       "border: none; font-size: 13px; padding: 1px 7px; }"
       "#ocrMin:hover, #ocrClose:hover { color: #ffffff; "
       "background: #3f3f46; border-radius: 4px; }"
-      "#ocrCopy { background-color: #6c4fd8; color: #ffffff; border: none; "
+      "#ocrCopy { background-color: %1; color: #ffffff; border: none; "
       "border-radius: 5px; padding: 6px 16px; font-size: 12px; }"
-      "#ocrCopy:hover { background-color: #7d63e0; }"
-      "#ocrCopy:disabled { background-color: #3c3c44; color: #77777f; }"));
+      "#ocrCopy:hover { background-color: %2; }"
+      "#ocrCopy:disabled { background-color: #3c3c44; color: #77777f; }")
+      .arg(accent, QColor(accent).lighter(115).name()));
 }
 
 QString OcrPanel::tr2(const char* zh, const char* en)

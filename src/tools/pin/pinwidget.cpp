@@ -12,6 +12,7 @@
 #include "src/utils/confighandler.h"
 #include "src/utils/globalvalues.h"
 #include "src/utils/ocrhelper.h"
+#include "src/utils/pathinfo.h"
 #include "src/widgets/capture/ocrpanel.h"
 
 #include <QActionGroup>
@@ -143,10 +144,12 @@ void PinWidget::buildToolBar()
         }
     };
 
-    auto addToolButton = [&](const QString& label, const QString& tip,
+    const QString accent = ConfigHandler().uiColor().name();
+    auto addToolButton = [&](const QString& icon, const QString& tip,
                              PinAnnotator::Tool tool) {
         auto* button = new QToolButton(m_toolBarRow);
-        button->setText(label);
+        button->setIcon(QIcon(PathInfo::whiteIconPath() + icon));
+        button->setIconSize(QSize(18, 18));
         button->setToolTip(tip);
         button->setCheckable(true);
         button->setChecked(tool == m_annotator->tool());
@@ -160,20 +163,20 @@ void PinWidget::buildToolBar()
         m_toolButtons.append({ tool, button });
     };
 
-    addToolButton(QStringLiteral("移"),
+    addToolButton(QStringLiteral("cursor-move"),
                   OcrPanel::tr2("移动钉图", "Move pin"), PinAnnotator::None);
-    addToolButton(QStringLiteral("画"), OcrPanel::tr2("画笔", "Pen"),
+    addToolButton(QStringLiteral("pencil"), OcrPanel::tr2("画笔", "Pen"),
                   PinAnnotator::Pencil);
-    addToolButton(QStringLiteral("荧"), OcrPanel::tr2("荧光笔", "Marker"),
+    addToolButton(QStringLiteral("marker"), OcrPanel::tr2("荧光笔", "Marker"),
                   PinAnnotator::Marker);
-    addToolButton(QStringLiteral("箭"), OcrPanel::tr2("箭头", "Arrow"),
-                  PinAnnotator::Arrow);
-    addToolButton(QStringLiteral("矩"), OcrPanel::tr2("矩形", "Rectangle"),
-                  PinAnnotator::Rectangle);
-    addToolButton(QStringLiteral("椭"), OcrPanel::tr2("椭圆", "Ellipse"),
-                  PinAnnotator::Ellipse);
-    addToolButton(QStringLiteral("线"), OcrPanel::tr2("直线", "Line"),
-                  PinAnnotator::Line);
+    addToolButton(QStringLiteral("arrow-bottom-left"),
+                  OcrPanel::tr2("箭头", "Arrow"), PinAnnotator::Arrow);
+    addToolButton(QStringLiteral("format_underlined"),
+                  OcrPanel::tr2("矩形", "Rectangle"), PinAnnotator::Rectangle);
+    addToolButton(QStringLiteral("circle-outline"),
+                  OcrPanel::tr2("椭圆", "Ellipse"), PinAnnotator::Ellipse);
+    addToolButton(QStringLiteral("format_strikethrough"),
+                  OcrPanel::tr2("直线", "Line"), PinAnnotator::Line);
 
     // 颜色下拉
     m_colorButton = new QToolButton(m_toolBarRow);
@@ -269,15 +272,18 @@ void PinWidget::buildToolBar()
     addActionButton(QStringLiteral("✕"), OcrPanel::tr2("关闭", "Close"),
                     [this]() { closePin(); });
 
-    m_toolBarRow->setStyleSheet(QStringLiteral(
-      "#pinToolBar { background-color: #1a1a1fee; "
-      "border: 1px solid #3f3f46; border-top: none; "
-      "border-radius: 0 0 8px 8px; }"
-      "#pinToolBar QToolButton { color: #d6d6dc; background: transparent; "
-      "border: none; border-radius: 4px; padding: 2px 8px; font-size: 12px; }"
-      "#pinToolBar QToolButton:hover { background: #3f3f46; color: #ffffff; }"
-      "#pinToolBar QToolButton:checked { background: #5842a3; "
-      "color: #ffffff; }"));
+    m_toolBarRow->setStyleSheet(
+      QStringLiteral("#pinToolBar { background-color: #1a1a1fee; "
+                     "border: 1px solid #3f3f46; border-top: none; "
+                     "border-radius: 0 0 8px 8px; }"
+                     "#pinToolBar QToolButton { color: #d6d6dc; "
+                     "background: transparent; border: none; "
+                     "border-radius: 14px; padding: 5px; }"
+                     "#pinToolBar QToolButton:hover { background: #3f3f46; "
+                     "color: #ffffff; }"
+                     "#pinToolBar QToolButton:checked { background: %1; "
+                     "color: #ffffff; }")
+        .arg(accent));
 }
 
 void PinWidget::closePin()

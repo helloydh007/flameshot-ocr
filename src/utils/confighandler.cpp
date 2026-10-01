@@ -74,7 +74,7 @@ bool verifyLaunchFile()
 static QMap<class QString, QSharedPointer<ValueHandler>>
         recognizedGeneralOptions = {
 //         KEY                            TYPE                 DEFAULT_VALUE
-    OPTION("showHelp"                    ,Bool               ( true          )),
+    OPTION("showHelp"                    ,Bool               ( false         )),
     OPTION("showSidePanelButton"         ,Bool               ( true          )),
     OPTION("showDesktopNotification"     ,Bool               ( true          )),
     OPTION("showAbortNotification"       ,Bool               ( true          )),

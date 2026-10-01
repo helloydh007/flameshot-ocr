@@ -2361,12 +2361,14 @@ void CaptureWidget::drawErrorMessage(const QString& msg, QPainter* painter)
 
 void CaptureWidget::drawInactiveRegion(QPainter* painter)
 {
+    // flameshot-ocr: 未框选时不压暗屏幕（Win11 风格，保持画面原样，
+    // 预选区悬浮工具条和取色都在这个状态下工作）
+    if (!m_selection->isVisible()) {
+        return;
+    }
     QColor overlayColor(0, 0, 0, m_opacity);
     painter->setBrush(overlayColor);
-    QRect r;
-    if (m_selection->isVisible()) {
-        r = m_selection->geometry().normalized();
-    }
+    QRect r = m_selection->geometry().normalized();
     QRegion grey(rect());
     grey = grey.subtracted(r);
 

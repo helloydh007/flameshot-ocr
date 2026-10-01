@@ -9,6 +9,7 @@
 #include <QDebug>
 #include <QKeyEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QScreen>
 #include <QShortcut>
 #include <QTimer>
@@ -29,12 +30,13 @@ ColorGrabWidget::ColorGrabWidget(QPixmap* p, QWidget* parent)
   , m_pixmap(p)
   , m_mousePressReceived(false)
   , m_extraZoomActive(false)
-  , m_magnifierActive(false)
+  , m_magnifierActive(true)
 {
     if (p == nullptr) {
         throw std::logic_error("Pixmap must not be null");
     }
     setAttribute(Qt::WA_DeleteOnClose);
+    setAttribute(Qt::WA_TranslucentBackground);
     // We don't need this widget to receive mouse events because we use
     // eventFilter on other objects that do
     setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -141,8 +143,41 @@ bool ColorGrabWidget::eventFilter(QObject*, QEvent* event)
 
 void ColorGrabWidget::paintEvent(QPaintEvent*)
 {
+    // flameshot-ocr: 圆形放大镜 —— 环形描边（UI 颜色）+ 中心十字准星 +
+    // 底部色值徽标，替代原先的裸方块
     QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
     painter.drawImage(QRectF(0, 0, width(), height()), m_previewImage);
+
+    const qreal radius = qMin(width(), height()) / 2.0 - 3.0;
+    const QPointF center(width() / 2.0, height() / 2.0);
+
+    QPainterPath circle;
+    circle.addEllipse(center, radius, radius);
+    painter.setPen(QPen(ConfigHandler().uiColor(), 3));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(circle);
+
+    painter.setPen(QPen(Qt::white, 1));
+    painter.drawLine(QPointF(center.x() - 9, center.y()),
+                     QPointF(center.x() + 9, center.y()));
+    painter.drawLine(QPointF(center.x(), center.y() - 9),
+                     QPointF(center.x(), center.y() + 9));
+
+    const QString label = m_color.name(QColor::HexRgb).toUpper();
+    QFont font = painter.font();
+    font.setBold(true);
+    painter.setFont(font);
+    const QFontMetrics metrics(font);
+    const QRectF badge = QRectF(
+      center.x() - metrics.horizontalAdvance(label) / 2.0 - 8,
+      height() - metrics.height() - 10,
+      metrics.horizontalAdvance(label) + 16, metrics.height() + 8);
+    painter.setPen(QPen(QColor(63, 63, 70), 1));
+    painter.setBrush(QColor(20, 20, 24, 235));
+    painter.drawRoundedRect(badge, 4, 4);
+    painter.setPen(Qt::white);
+    painter.drawText(badge, Qt::AlignCenter, label);
 }
 
 void ColorGrabWidget::showEvent(QShowEvent*)

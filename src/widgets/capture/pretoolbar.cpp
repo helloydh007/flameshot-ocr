@@ -78,12 +78,15 @@ PreToolbar::PreToolbar(QWidget* parent)
     separator1->setStyleSheet(QStringLiteral("color: #3f3f46;"));
     layout->addWidget(separator1);
 
-    // 取色：点击进入取色模式，拾取后按格式自动复制；下拉切换格式
+    // 取色：点击进入取色模式（按所选格式自动复制）；旁边的 ▾ 切换格式
     auto* grabButton = flatButton(this, "colorize",
                                   OcrPanel::tr2("拾取颜色（自动复制）",
                                                 "Pick color (auto copy)"));
-    grabButton->setPopupMode(QToolButton::MenuButtonPopup);
-    auto* grabMenu = new QMenu(grabButton);
+    connect(grabButton, &QToolButton::clicked, this,
+            [this]() { emit colorGrabRequested(); });
+    layout->addWidget(grabButton);
+
+    auto* grabMenu = new QMenu(this);
     auto* hexAction = grabMenu->addAction(
       OcrPanel::tr2("十六进制 (#RRGGBB)", "Hex (#RRGGBB)"));
     hexAction->setCheckable(true);
@@ -102,10 +105,16 @@ PreToolbar::PreToolbar(QWidget* parent)
     connect(rgbAction, &QAction::triggered, this, []() {
         ConfigHandler().setColorPickFormat(QStringLiteral("rgb"));
     });
-    grabButton->setMenu(grabMenu);
-    connect(grabButton, &QToolButton::clicked, this,
-            [this]() { emit colorGrabRequested(); });
-    layout->addWidget(grabButton);
+    auto* grabFormatButton = new QToolButton(this);
+    grabFormatButton->setText(QStringLiteral("▾"));
+    grabFormatButton->setToolTip(
+      OcrPanel::tr2("复制格式", "Copy format"));
+    grabFormatButton->setAutoRaise(true);
+    grabFormatButton->setFixedWidth(18);
+    grabFormatButton->setCursor(Qt::PointingHandCursor);
+    grabFormatButton->setMenu(grabMenu);
+    grabFormatButton->setPopupMode(QToolButton::InstantPopup);
+    layout->addWidget(grabFormatButton);
 
     // 画笔颜色（下拉调色板）
     m_colorBtn = new QToolButton(this);
@@ -164,13 +173,16 @@ PreToolbar::PreToolbar(QWidget* parent)
             [this]() { emit settingsRequested(); });
     layout->addWidget(settingsButton);
 
+    const QString accent = ConfigHandler().uiColor().name();
     setStyleSheet(QStringLiteral(
       "#preToolbar { background-color: #1a1a1fee; "
       "border: 1px solid #3f3f46; border-radius: 10px; }"
       "#preToolbar QToolButton { background: transparent; border: none; "
       "border-radius: 6px; padding: 4px; }"
       "#preToolbar QToolButton:hover { background: #3f3f46; }"
-      "#preToolbar QToolButton:checked { background: #5842a3; }"));
+      "#preToolbar QToolButton:checked { background: %1; }"
+      "#preToolbar QToolButton:pressed { background: %1; }")
+      .arg(accent));
 }
 
 void PreToolbar::setToolChecked(CaptureTool::Type type)
