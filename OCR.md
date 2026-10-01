@@ -50,7 +50,10 @@ cpack --config build/CPackConfig.cmake -G DEB   # 可选：生成 deb
 | 文件 | 改动 |
 |---|---|
 | `src/tools/ocr/ocrtool.{h,cpp}` | 新增：OCR 工具（点击发出 `REQ_OCR`，不关闭截图界面） |
-| `src/widgets/capture/ocrpanel.{h,cpp}` | 新增：QQ 风格 OCR 结果面板（可选文字 + 复制按钮 + 状态栏） |
+| `src/tools/pin/pinannotator.{h,cpp}` | 新增：钉图标注层（画笔/荧光笔/箭头/矩形/椭圆/直线，8 色 3 粗细，Ctrl+Z 撤销；矢量点存于 m_pixmap 坐标系，跟随旋转/缩放） |
+| `src/widgets/capture/ocrpanel.{h,cpp}` | 新增：QQ 风格 OCR 结果面板（可选文字 + 复制按钮 + 状态栏；支持拖动/边缘缩放/最小化/关闭；可作顶层窗口伴随钉图） |
+| `src/utils/ocrhelper.{h,cpp}` | 新增：异步 OCR 公共管线（钉图使用；截图界面预留迁移） |
+| `src/tools/pin/pinwidget.{h,cpp}` | 右键菜单新增 OCR 与「标注」子菜单；复制/保存合成标注；旋转/缩放同步标注层 |
 | `data/img/material/{black,white}/ocr.svg` | 新增：OCR 按钮图标（取景框 + 文本行 + 放大镜） |
 | `src/tools/capturetool.h` | 新增 `TYPE_OCR = 25`、`REQ_OCR` |
 | `src/tools/toolfactory.cpp` | 注册 `OcrTool` |

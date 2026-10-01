@@ -11,6 +11,8 @@ class QGestureEvent;
 class QPinchGesture;
 class QGraphicsDropShadowEffect;
 class OcrPanel;
+class PinAnnotator;
+class QResizeEvent;
 
 class PinWidget : public QWidget
 {
@@ -24,6 +26,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
+    void resizeEvent(QResizeEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void enterEvent(QEnterEvent*) override;
     void leaveEvent(QEvent*) override;
@@ -37,6 +40,10 @@ private:
     void pinchTriggered(QPinchGesture*);
     void closePin();
 
+    // 带标注合成的最终图像（复制/保存用）
+    QPixmap compositedPixmap() const;
+    void positionAnnotator();
+
     void rotateLeft();
     void rotateRight();
 
@@ -48,6 +55,7 @@ private:
     QLabel* m_label;
     QGraphicsDropShadowEffect* m_shadowEffect;
     OcrPanel* m_ocrPanel = nullptr;
+    PinAnnotator* m_annotator = nullptr;
     QColor m_baseColor, m_hoverColor;
 
     bool m_expanding{ false };
