@@ -48,7 +48,9 @@
 #include <QPropertyAnimation>
 #include <QToolTip>
 #include <QVariantAnimation>
+#include <cstdio>
 #include <functional>
+#include <memory>
 #include <QImage>
 #include <QProcess>
 #include <QRegularExpression>
@@ -886,39 +888,97 @@ void CaptureWidget::runSelfTest()
         // 生产流程中钉图是“先关截图窗再钉”，不存在此路径。
     }
 
-    // ⑦ Esc 与 ✕ 退出按钮：有标注时都应先弹确认；选“否”时保持界面
+    // ⑦ 确认框与「关闭返回悬浮工具条」行为（Esc / ✕ / 钉图三条路径）
     // 用轮询代替固定延时（消除弹窗出现时机与定时器的竞态）
-    auto runConfirmTest = [this](const char* label,
-                                 const std::function<void()>& action) {
-        bool promptShown = false;
-        auto* poll = new QTimer(this);
-        poll->setInterval(50);
-        connect(poll, &QTimer::timeout, this, [this, &promptShown, poll]() {
-            if (!promptShown && m_quitPrompt && m_quitPrompt->isVisible()) {
-                promptShown = true;
-                poll->stop();
-                poll->deleteLater();
-                m_quitPrompt->done(QMessageBox::No);
-            }
-        });
-        poll->start();
-        action();
-        const bool stillOpen = isVisible();
-        qWarning() << "SELFTEST" << label << ":"
-                   << ((promptShown && stillOpen)
-                         ? "PASS (prompt shown, stayed open on No)"
-                         : "FAIL")
-                   << "prompt:" << promptShown << "open:" << stillOpen;
-    };
+    auto runConfirmTest =
+      [this](const char* label,
+             const std::function<void()>& action,
+             bool expectPrompt,
+             const std::function<bool()>& extra = {}) {
+          auto promptShown = std::make_shared<bool>(false);
+          auto* poll = new QTimer(this);
+          poll->setInterval(50);
+          connect(poll,
+                  &QTimer::timeout,
+                  this,
+                  [this, promptShown, poll]() {
+                      if (m_quitPrompt && m_quitPrompt->isVisible()) {
+                          *promptShown = true;
+                          poll->stop();
+                          poll->deleteLater();
+                          m_quitPrompt->done(QMessageBox::No);
+                      }
+                  });
+          poll->start();
+          action();
+          poll->stop();
+          poll->deleteLater();
+          const bool stillOpen = isVisible();
+          const bool extraOk = extra ? extra() : true;
+          const bool pass =
+            (*promptShown == expectPrompt) && stillOpen && extraOk;
+          qWarning() << "SELFTEST" << label << ":" << (pass ? "PASS" : "FAIL")
+                     << "prompt:" << *promptShown << "(expect" << expectPrompt
+                     << ") open:" << stillOpen << "extra:" << extraOk;
+          fflush(stderr);
+      };
 
-    runConfirmTest("6 esc-confirm", [this]() {
-        // 真实语义：第一次 Esc 取消对象选中，第二次 Esc 才弹确认框
-        deleteToolWidgetOrClose();
-        deleteToolWidgetOrClose();
-    });
+    runConfirmTest(
+      "6 esc-confirm",
+      [this]() {
+          // 真实升级链：Esc 依次为「取消对象选中 → 取消选区回工具条 → 退出确认」
+          deleteToolWidgetOrClose();
+          deleteToolWidgetOrClose();
+          deleteToolWidgetOrClose();
+      },
+      true);
     runConfirmTest("7 exit-button-confirm",
-                   [this]() { handleToolSignal(CaptureTool::REQ_CLOSE_GUI); });
+                   [this]() { handleToolSignal(CaptureTool::REQ_CLOSE_GUI); },
+                   true);
+    // 8: 有选区时“关闭”应取消选区、回到悬浮工具条页（不弹退出确认、保留标注）
+    runConfirmTest(
+      "8 selection-close-to-toolbar",
+      [this]() {
+          m_selection->show();
+          const QRect selRect(
+            rect().width() / 5, rect().height() / 5, 400, 300);
+          m_selection->setGeometry(selRect);
+          m_context.selection = selRect;
+          emit m_selection->geometrySettled();
+          deleteToolWidgetOrClose();
+      },
+      false,
+      [this]() {
+          return !m_selection->isVisible() && m_preToolbar->isVisible() &&
+                 !m_captureToolObjects.captureToolObjects().isEmpty();
+      });
+    // 9: 钉图（任务型关闭）不应弹退出确认 —— 最后执行（正常关闭窗口）
+    {
+        auto pinPrompt = std::make_shared<bool>(false);
+        auto* pinPoll = new QTimer(this);
+        pinPoll->setInterval(50);
+        connect(pinPoll,
+                &QTimer::timeout,
+                this,
+                [this, pinPrompt, pinPoll]() {
+                    if (m_quitPrompt && m_quitPrompt->isVisible()) {
+                        *pinPrompt = true;
+                        pinPoll->stop();
+                        pinPoll->deleteLater();
+                        m_quitPrompt->done(QMessageBox::No);
+                    }
+                });
+        pinPoll->start();
+        m_context.request.addTask(CaptureRequest::PIN);
+        handleToolSignal(CaptureTool::REQ_CLOSE_GUI);
+        pinPoll->stop();
+        qWarning() << "SELFTEST 9 pin-no-prompt:"
+                   << (!*pinPrompt ? "PASS" : "FAIL")
+                   << "prompt:" << *pinPrompt;
+        fflush(stderr);
+    }
     qWarning() << "SELFTEST: end";
+    fflush(stderr);
 }
 
 // flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口（直接导出，不走析构路径）
@@ -1055,6 +1115,17 @@ void CaptureWidget::initQuitPrompt()
     });
 }
 
+void CaptureWidget::resetSelectionToToolbar()
+{
+    // flameshot-ocr: 取消选区并回到预选区悬浮工具条状态（标注全部保留）
+    cancel();
+    m_context.selection = QRect();
+    m_buttonHandler->hide();
+    updateSelectionState();
+    updateCursor();
+    updatePreToolbar();
+}
+
 bool CaptureWidget::promptQuit()
 {
     return m_quitPrompt->exec() == QMessageBox::Yes;
@@ -1077,6 +1148,9 @@ void CaptureWidget::deleteToolWidgetOrClose()
         m_toolWidget = nullptr;
     } else if (m_colorPicker && m_colorPicker->isVisible()) {
         m_colorPicker->hide();
+    } else if (m_selection->isVisible()) {
+        // flameshot-ocr: 有选区时先取消选区，回到预选区悬浮工具条页（保留标注）
+        resetSelectionToToolbar();
     } else {
         // close CaptureWidget
         // flameshot-ocr: 已有手绘标注时强制确认，避免误触丢失
@@ -1439,6 +1513,17 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
                     if (m_panel->activeLayerIndex() != candidateIndex) {
                         m_panel->setActiveLayer(candidateIndex);
                     }
+                    // flameshot-ocr: 预烘焙底图（原图 + 除本对象外的全部标注）。
+                    // 拖动期间每帧只需「拷贝底图 + 渲染被拖对象」，
+                    // 避免全量重绘导致跳帧、缩放跟手性差（“速度过快”观感）
+                    m_resizeBase = m_context.origScreenshot;
+                    for (const auto& toolItem :
+                         m_captureToolObjects.captureToolObjects()) {
+                        if (toolItem && toolItem != candidate) {
+                            processPixmapWithTool(&m_resizeBase, toolItem);
+                        }
+                    }
+                    m_captureToolObjectsBackup = m_captureToolObjects;
                     m_objectResizing = true;
                     m_objectResizeHandle = handle;
                     m_objectStartRect = candidateRect;
@@ -1544,7 +1629,14 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
             newRect = newRect.normalized();
             if (newRect.width() >= 8 && newRect.height() >= 8) {
                 scaleToolToRect(object, m_objectStartRect, newRect);
-                drawToolsData(false);
+                // 轻量重绘：拷贝预烘焙底图 + 只渲染被拖动对象，
+                // 帧间开销恒定（不随标注数量增长），缩放跟手更平滑
+                if (!m_resizeBase.isNull()) {
+                    m_context.screenshot = m_resizeBase;
+                    processPixmapWithTool(&m_context.screenshot, object);
+                } else {
+                    drawToolsData(false);
+                }
                 drawObjectSelection();
                 update(paddedUpdateRect(object->boundingRect()));
             }
@@ -1669,7 +1761,15 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
     }
     m_mouseIsClicked = false;
     m_activeToolIsMoved = false;
+    const bool wasResizing = m_objectResizing;
     m_objectResizing = false;
+    if (wasResizing) {
+        // 缩放结束：写入撤销栈、清空底图、做一次全量重绘恢复正常渲染
+        pushObjectsStateToUndoStack();
+        m_resizeBase = QPixmap();
+        drawToolsData();
+        update();
+    }
 
     updateSelectionState();
     updateCursor();
@@ -2140,11 +2240,18 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
 {
     switch (r) {
         case CaptureTool::REQ_CLOSE_GUI:
-            // flameshot-ocr: 有未导出的手绘标注时先确认（含 ✕ 退出按钮路径），
-            // 避免误点把整页关掉、丢失已画的矩形等
-            if (!m_captureToolObjects.captureToolObjects().isEmpty()) {
-                if (m_quitPrompt->isHidden() && !promptQuit()) {
-                    break; // 用户取消，保持截图界面
+            // flameshot-ocr: 仅当“纯关闭”意图（无导出任务）时才做保护；
+            // 钉图/复制/保存等带任务的关闭属于正常导出，不应打断
+            if (m_context.request.tasks() == CaptureRequest::NO_TASK) {
+                if (m_selection->isVisible()) {
+                    // 有选区：取消选区、回到预选区悬浮工具条页（保留标注）
+                    resetSelectionToToolbar();
+                    break;
+                }
+                if (!m_captureToolObjects.captureToolObjects().isEmpty()) {
+                    if (m_quitPrompt->isHidden() && !promptQuit()) {
+                        break; // 用户取消，保持截图界面
+                    }
                 }
             }
             close();

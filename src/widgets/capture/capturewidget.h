@@ -107,6 +107,7 @@ private slots:
     void openSettings();
     void updatePreToolbar();
     void positionPreToolbar();
+    void resetSelectionToToolbar();
     void runSelfTest();
     void synthMousePress(const QPoint& pos);
     void synthMouseMove(const QPoint& pos);
@@ -203,6 +204,8 @@ private:
     int m_objectResizeHandle = 0;
     QRect m_objectStartRect;
     QPoint m_objectResizeStartPos;
+    // 缩放期间预烘焙底图（避免每帧全量重绘）
+    QPixmap m_resizeBase;
 
     // Main ui color
     QColor m_uiColor;
