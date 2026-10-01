@@ -14,6 +14,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -26,34 +27,65 @@ OcrPanel::OcrPanel(QWidget* parent)
     layout->setContentsMargins(10, 8, 10, 10);
     layout->setSpacing(6);
 
+    // 标题行：标题 + 最小化/关闭按钮
+    auto* header = new QHBoxLayout();
+    header->setSpacing(4);
     m_titleLabel = new QLabel(tr2("文字识别", "OCR"), this);
     m_titleLabel->setObjectName(QStringLiteral("ocrTitle"));
+    header->addWidget(m_titleLabel);
+    header->addStretch(1);
+    m_minButton = new QToolButton(this);
+    m_minButton->setObjectName(QStringLiteral("ocrMin"));
+    m_minButton->setText(QStringLiteral("—"));
+    m_minButton->setToolTip(tr2("最小化", "Minimize"));
+    m_minButton->setAutoRaise(true);
+    m_minButton->setCursor(Qt::PointingHandCursor);
+    header->addWidget(m_minButton);
+    m_closeButton = new QToolButton(this);
+    m_closeButton->setObjectName(QStringLiteral("ocrClose"));
+    m_closeButton->setText(QStringLiteral("✕"));
+    m_closeButton->setToolTip(tr2("关闭", "Close"));
+    m_closeButton->setAutoRaise(true);
+    m_closeButton->setCursor(Qt::PointingHandCursor);
+    header->addWidget(m_closeButton);
+    layout->addLayout(header);
 
-    m_textEdit = new QPlainTextEdit(this);
+    // 内容区：识别文本 + 底部状态/复制按钮（最小化时整体隐藏）
+    m_body = new QWidget(this);
+    auto* bodyLayout = new QVBoxLayout(m_body);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(6);
+
+    m_textEdit = new QPlainTextEdit(m_body);
     m_textEdit->setObjectName(QStringLiteral("ocrText"));
     m_textEdit->setReadOnly(true);
     m_textEdit->setFrameShape(QFrame::NoFrame);
     m_textEdit->setPlaceholderText(
       tr2("识别结果将显示在这里", "Recognized text appears here"));
+    bodyLayout->addWidget(m_textEdit, 1);
 
-    m_copyButton = new QPushButton(tr2("复制文字", "Copy text"), this);
+    m_copyButton = new QPushButton(tr2("复制文字", "Copy text"), m_body);
     m_copyButton->setObjectName(QStringLiteral("ocrCopy"));
     m_copyButton->setEnabled(false);
 
-    m_statusLabel = new QLabel(this);
+    m_statusLabel = new QLabel(m_body);
     m_statusLabel->setObjectName(QStringLiteral("ocrStatus"));
 
-    layout->addWidget(m_titleLabel);
-    layout->addWidget(m_textEdit, 1);
     auto* footer = new QHBoxLayout();
     footer->addWidget(m_statusLabel, 1);
     footer->addWidget(m_copyButton);
-    layout->addLayout(footer);
+    bodyLayout->addLayout(footer);
+    layout->addWidget(m_body, 1);
 
     connect(m_copyButton, &QPushButton::clicked, this, [this]() {
         QApplication::clipboard()->setText(m_textEdit->toPlainText());
         m_statusLabel->setText(tr2("已复制 ✓", "Copied ✓"));
     });
+
+    connect(m_minButton, &QToolButton::clicked, this, [this]() {
+        setMinimized(!m_minimized);
+    });
+    connect(m_closeButton, &QToolButton::clicked, this, &OcrPanel::hide);
 
     // 中文右键菜单（复制/全选），替代 QPlainTextEdit 默认的英文菜单
     m_textEdit->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -83,6 +115,10 @@ OcrPanel::OcrPanel(QWidget* parent)
       "border-radius: 6px; padding: 6px; font-size: 13px; "
       "selection-background-color: #5842a3; }"
       "#ocrStatus { color: #9a9aa2; font-size: 11px; }"
+      "#ocrMin, #ocrClose { color: #9a9aa2; background: transparent; "
+      "border: none; font-size: 13px; padding: 1px 7px; }"
+      "#ocrMin:hover, #ocrClose:hover { color: #ffffff; "
+      "background: #3f3f46; border-radius: 4px; }"
       "#ocrCopy { background-color: #6c4fd8; color: #ffffff; border: none; "
       "border-radius: 5px; padding: 6px 16px; font-size: 12px; }"
       "#ocrCopy:hover { background-color: #7d63e0; }"
@@ -136,6 +172,7 @@ void OcrPanel::contextMenuEvent(QContextMenuEvent* event)
 
 void OcrPanel::showLoading(const QRect& selection)
 {
+    setMinimized(false);
     m_textEdit->clear();
     m_copyButton->setEnabled(false);
     m_statusLabel->setText(tr2("识别中…", "Recognizing…"));
@@ -167,6 +204,23 @@ void OcrPanel::showFailure(const QString& detail)
     m_copyButton->setEnabled(false);
     m_statusLabel->setText(tr2("识别失败", "Failed"));
     raise();
+}
+
+void OcrPanel::setMinimized(bool minimized)
+{
+    if (m_minimized == minimized) {
+        return;
+    }
+    m_minimized = minimized;
+    if (m_minimized) {
+        m_expandedSize = size();
+        m_body->hide();
+        // 只留标题条（上下边距 8+10 + 标题行高）
+        resize(width(), m_titleLabel->sizeHint().height() + 18);
+    } else {
+        m_body->show();
+        resize(m_expandedSize.isValid() ? m_expandedSize : QSize(320, 300));
+    }
 }
 
 void OcrPanel::positionBeside(const QRect& selection)

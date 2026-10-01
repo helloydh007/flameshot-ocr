@@ -8,6 +8,7 @@
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
+class QToolButton;
 
 // Panel shown beside the selection with OCR results (WeChat/QQ style):
 // selectable text plus a copy button.
@@ -39,9 +40,15 @@ protected:
 
 private:
     void positionBeside(const QRect& selection);
+    void setMinimized(bool minimized);
 
     QLabel* m_titleLabel;
+    QToolButton* m_minButton;
+    QToolButton* m_closeButton;
+    QWidget* m_body;
     QPlainTextEdit* m_textEdit;
     QPushButton* m_copyButton;
     QLabel* m_statusLabel;
+    bool m_minimized = false;
+    QSize m_expandedSize;
 };
