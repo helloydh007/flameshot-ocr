@@ -66,6 +66,10 @@ PreToolbar::PreToolbar(QWidget* parent)
                                                   OcrPanel::tr2("矩形", "Rectangle")) },
         { CaptureTool::TYPE_CIRCLE, flatButton(this, "circle-outline",
                                                OcrPanel::tr2("椭圆", "Ellipse")) },
+        { CaptureTool::TYPE_CIRCLECOUNT,
+          flatButton(this, "circlecount-outline",
+                     OcrPanel::tr2("序号标记（递增编号）",
+                                   "Numbered marker (increments)")) },
     };
     for (auto& entry : m_toolButtons) {
         entry.second->setCheckable(true);
@@ -74,6 +78,19 @@ PreToolbar::PreToolbar(QWidget* parent)
         connect(entry.second, &QToolButton::clicked, this,
                 [this, type]() { emit toolRequested(type); });
     }
+
+    // 形状填充开关：选中=实心填充，未选=只显示边框（矩形/椭圆）
+    m_fillBtn = flatButton(
+      this, "rectangle",
+      OcrPanel::tr2("形状填充：选中 = 实心，未选 = 只显示边框",
+                    "Shape fill: on = solid, off = outline only"));
+    m_fillBtn->setCheckable(true);
+    m_fillBtn->setChecked(ConfigHandler().shapeFill());
+    connect(m_fillBtn, &QToolButton::toggled, this, [this](bool checked) {
+        ConfigHandler().setShapeFill(checked);
+        emit fillToggled();
+    });
+    layout->addWidget(m_fillBtn);
 
     auto* separator1 = new QFrame(this);
     separator1->setFrameShape(QFrame::VLine);

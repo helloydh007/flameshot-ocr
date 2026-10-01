@@ -142,6 +142,8 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     OPTION("ocrCommand"                  ,String             ( "tesseract %i stdout -l chi_sim+eng --psm 6" )),
     // flameshot-ocr: color pick copy format: "hex" (#RRGGBB) or "rgb" (r, g, b)
     OPTION("colorPickFormat"             ,String             ( "hex"         )),
+    // flameshot-ocr: rectangle/ellipse fill toggle (false = outline only)
+    OPTION("shapeFill"                   ,Bool               ( false         )),
 };
 
 static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {

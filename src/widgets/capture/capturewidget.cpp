@@ -48,6 +48,7 @@
 #include <QPropertyAnimation>
 #include <QToolTip>
 #include <QVariantAnimation>
+#include <functional>
 #include <QImage>
 #include <QProcess>
 #include <QRegularExpression>
@@ -351,6 +352,11 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
             &PreToolbar::undoRequested,
             this,
             &CaptureWidget::undo);
+    // 形状填充开关切换后重绘（矩形/椭圆渲染时读取该配置）
+    connect(m_preToolbar, &PreToolbar::fillToggled, this, [this]() {
+        drawToolsData();
+        update();
+    });
     connect(m_preToolbar,
             &PreToolbar::redoRequested,
             this,
@@ -713,6 +719,59 @@ void CaptureWidget::runSelfTest()
                      : "FAIL")
                << before << "->" << after;
 
+    // 3e-3g: 矩形/椭圆双向缩放（含从框外沿抓取，复现用户报告的问题）
+    auto lastRect = [this]() {
+        if (m_captureToolObjects.size() <= 0) {
+            return QRect();
+        }
+        auto object = m_captureToolObjects.at(m_captureToolObjects.size() - 1);
+        return object ? object->boundingRect().normalized() : QRect();
+    };
+
+    setState(m_buttonsByType.value(CaptureTool::TYPE_RECTANGLE));
+    synthMousePress(QPoint(700, 260));
+    synthMouseMove(QPoint(850, 360));
+    synthMouseRelease(QPoint(850, 360));
+    const QRect rectBefore = lastRect();
+    // 放大：从右边缘框外 3px 起拖，向右 60px
+    synthMousePress(QPoint(rectBefore.right() + 3, rectBefore.center().y()));
+    synthMouseMove(QPoint(rectBefore.right() + 63, rectBefore.center().y()));
+    synthMouseRelease(QPoint(rectBefore.right() + 63, rectBefore.center().y()));
+    const QRect rectWide = lastRect();
+    qWarning() << "SELFTEST 3e rect-enlarge-from-outside:"
+               << (rectWide.width() > rectBefore.width() ? "PASS" : "FAIL")
+               << rectBefore << "->" << rectWide;
+
+    // 缩小：从右下角框外 2px 起拖，向左上
+    synthMousePress(rectWide.bottomRight() + QPoint(2, 2));
+    synthMouseMove(rectWide.bottomRight() - QPoint(40, 30));
+    synthMouseRelease(rectWide.bottomRight() - QPoint(40, 30));
+    const QRect rectSmaller = lastRect();
+    qWarning() << "SELFTEST 3f rect-shrink-from-outside:"
+               << ((rectSmaller.width() < rectWide.width() &&
+                    rectSmaller.height() < rectWide.height())
+                     ? "PASS"
+                     : "FAIL")
+               << rectWide << "->" << rectSmaller;
+
+    // 3g: 椭圆放大（右边缘框外 3px 起拖）
+    setState(m_buttonsByType.value(CaptureTool::TYPE_CIRCLE));
+    synthMousePress(QPoint(700, 480));
+    synthMouseMove(QPoint(820, 560));
+    synthMouseRelease(QPoint(820, 560));
+    const QRect ellipseBefore = lastRect();
+    synthMousePress(
+      QPoint(ellipseBefore.right() + 3, ellipseBefore.center().y()));
+    synthMouseMove(
+      QPoint(ellipseBefore.right() + 63, ellipseBefore.center().y()));
+    synthMouseRelease(
+      QPoint(ellipseBefore.right() + 63, ellipseBefore.center().y()));
+    const QRect ellipseAfter = lastRect();
+    qWarning() << "SELFTEST 3g ellipse-enlarge-from-outside:"
+               << (ellipseAfter.width() > ellipseBefore.width() ? "PASS"
+                                                                : "FAIL")
+               << ellipseBefore << "->" << ellipseAfter;
+
     // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
     {
         // 取色放大镜：startGrabbing 后无需移动鼠标即应可见
@@ -822,24 +881,43 @@ void CaptureWidget::runSelfTest()
                          ? "PASS"
                          : "FAIL")
                    << clipboardFormats;
-        pin->close();
-        QApplication::processEvents(QEventLoop::AllEvents, 50);
+        // 注意：测试中不关闭 pin —— 在合成流程里 close 会触发应用的
+        // captureFailed→exit 机制，打断后续嵌套事件循环测试；
+        // 生产流程中钉图是“先关截图窗再钉”，不存在此路径。
     }
 
-    // ⑦ Esc（有标注时）→ 应弹确认框；定时器替我们按回车确认
-    QTimer::singleShot(600, this, [this]() {
-        if (m_quitPrompt && m_quitPrompt->isVisible()) {
-            QCoreApplication::postEvent(m_quitPrompt,
-                                        new QKeyEvent(QEvent::KeyPress,
-                                                      Qt::Key_Return,
-                                                      Qt::NoModifier));
-        }
+    // ⑦ Esc 与 ✕ 退出按钮：有标注时都应先弹确认；选“否”时保持界面
+    // 用轮询代替固定延时（消除弹窗出现时机与定时器的竞态）
+    auto runConfirmTest = [this](const char* label,
+                                 const std::function<void()>& action) {
+        bool promptShown = false;
+        auto* poll = new QTimer(this);
+        poll->setInterval(50);
+        connect(poll, &QTimer::timeout, this, [this, &promptShown, poll]() {
+            if (!promptShown && m_quitPrompt && m_quitPrompt->isVisible()) {
+                promptShown = true;
+                poll->stop();
+                poll->deleteLater();
+                m_quitPrompt->done(QMessageBox::No);
+            }
+        });
+        poll->start();
+        action();
+        const bool stillOpen = isVisible();
+        qWarning() << "SELFTEST" << label << ":"
+                   << ((promptShown && stillOpen)
+                         ? "PASS (prompt shown, stayed open on No)"
+                         : "FAIL")
+                   << "prompt:" << promptShown << "open:" << stillOpen;
+    };
+
+    runConfirmTest("6 esc-confirm", [this]() {
+        // 真实语义：第一次 Esc 取消对象选中，第二次 Esc 才弹确认框
+        deleteToolWidgetOrClose();
+        deleteToolWidgetOrClose();
     });
-    deleteToolWidgetOrClose();
-    qWarning() << "SELFTEST 6 esc-confirm:"
-               << (m_quitPrompt && !m_quitPrompt->isVisible()
-                     ? "PASS (prompt shown & accepted)"
-                     : "UNKNOWN");
+    runConfirmTest("7 exit-button-confirm",
+                   [this]() { handleToolSignal(CaptureTool::REQ_CLOSE_GUI); });
     qWarning() << "SELFTEST: end";
 }
 
@@ -1342,6 +1420,36 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
         updateCursor();
         return;
     }
+
+    // flameshot-ocr: 角点缩放优先拦截（早于“取消选中”逻辑，
+    // 且抓取区向框外扩展——放大方向从手柄外沿起拖也能抓住）
+    if (e->button() == Qt::LeftButton && m_activeButton.isNull() &&
+        !m_eraserActive) {
+        int candidateIndex = m_panel->activeLayerIndex();
+        if (candidateIndex < 0) {
+            candidateIndex = objectIndexWithGrabZone(e->pos());
+        }
+        if (candidateIndex >= 0) {
+            auto candidate = m_captureToolObjects.at(candidateIndex);
+            if (candidate) {
+                const QRect candidateRect =
+                  candidate->boundingRect().normalized();
+                const int handle = resizeHandleForRect(candidateRect, e->pos());
+                if (handle > 0) {
+                    if (m_panel->activeLayerIndex() != candidateIndex) {
+                        m_panel->setActiveLayer(candidateIndex);
+                    }
+                    m_objectResizing = true;
+                    m_objectResizeHandle = handle;
+                    m_objectStartRect = candidateRect;
+                    m_objectResizeStartPos = e->pos();
+                    e->accept();
+                    return;
+                }
+            }
+        }
+    }
+
     // reset object selection if capture area selection is active
     if (m_selection->getMouseSide(e->pos()) != SelectionWidget::CENTER) {
         m_panel->setActiveLayer(-1);
@@ -1372,19 +1480,6 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
     }
 
     selectToolItemAtPos(m_mousePressedPos);
-
-    // flameshot-ocr: 选中对象的角点拖拽缩放
-    if (e->button() == Qt::LeftButton) {
-        const int resizeHandle = objectResizeHandleAt(e->pos());
-        if (resizeHandle > 0 && activeToolObject()) {
-            m_objectResizing = true;
-            m_objectResizeHandle = resizeHandle;
-            m_objectStartRect = activeToolObject()->boundingRect().normalized();
-            m_objectResizeStartPos = e->pos();
-            e->accept();
-            return;
-        }
-    }
 
     updateSelectionState();
     updateCursor();
@@ -1644,8 +1739,17 @@ int CaptureWidget::objectResizeHandleAt(const QPoint& pos)
     if (!object) {
         return -1;
     }
-    const QRect rect = object->boundingRect().normalized();
-    const int margin = 8;
+    return resizeHandleForRect(object->boundingRect().normalized(), pos);
+}
+
+// 手柄判定：距离任一边 <= 10px 即命中该边（左右/上下同时命中视为无效）；
+// 该判定同时用于“框内贴边”和“框外贴边”，保证放大与缩小两个方向都能抓住
+int CaptureWidget::resizeHandleForRect(const QRect& rect, const QPoint& pos)
+{
+    if (rect.isNull()) {
+        return -1;
+    }
+    const int margin = 10;
     int handle = 0;
     if (qAbs(pos.x() - rect.left()) <= margin) {
         handle |= 1;
@@ -1659,11 +1763,30 @@ int CaptureWidget::objectResizeHandleAt(const QPoint& pos)
     if (qAbs(pos.y() - rect.bottom()) <= margin) {
         handle |= 8;
     }
-    // 同时命中左右或上下视为无效
     if (handle == 0 || handle == 3 || handle == 12) {
         return -1;
     }
     return handle;
+}
+
+// 找到抓取区（对象包围盒外扩 12px）内最上层的对象
+int CaptureWidget::objectIndexWithGrabZone(const QPoint& pos)
+{
+    const int zone = 12;
+    const auto objects = m_captureToolObjects.captureToolObjects();
+    for (int i = objects.size() - 1; i >= 0; --i) {
+        auto object = objects.at(i);
+        if (!object) {
+            continue;
+        }
+        if (object->boundingRect()
+              .normalized()
+              .adjusted(-zone, -zone, zone, zone)
+              .contains(pos)) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 void CaptureWidget::scaleToolToRect(CaptureTool* tool,
@@ -2017,6 +2140,13 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
 {
     switch (r) {
         case CaptureTool::REQ_CLOSE_GUI:
+            // flameshot-ocr: 有未导出的手绘标注时先确认（含 ✕ 退出按钮路径），
+            // 避免误点把整页关掉、丢失已画的矩形等
+            if (!m_captureToolObjects.captureToolObjects().isEmpty()) {
+                if (m_quitPrompt->isHidden() && !promptQuit()) {
+                    break; // 用户取消，保持截图界面
+                }
+            }
             close();
             break;
         case CaptureTool::REQ_HIDE_GUI:
@@ -2424,9 +2554,18 @@ void CaptureWidget::updateCursor()
     // flameshot-ocr: 标注对象悬停光标（手柄=缩放，对象=移动）
     if (!m_activeButton && !m_mouseIsClicked) {
         const QPoint cursorPos = mapFromGlobal(QCursor::pos());
-        if (objectResizeHandleAt(cursorPos) > 0) {
-            setCursor(Qt::SizeFDiagCursor);
-            return;
+        int hoverIndex = m_panel->activeLayerIndex();
+        if (hoverIndex < 0) {
+            hoverIndex = objectIndexWithGrabZone(cursorPos);
+        }
+        if (hoverIndex >= 0) {
+            auto hoverObject = m_captureToolObjects.at(hoverIndex);
+            if (hoverObject &&
+                resizeHandleForRect(hoverObject->boundingRect().normalized(),
+                                    cursorPos) > 0) {
+                setCursor(Qt::SizeFDiagCursor);
+                return;
+            }
         }
         if (m_captureToolObjects.find(cursorPos, size()) >= 0) {
             setCursor(Qt::SizeAllCursor);

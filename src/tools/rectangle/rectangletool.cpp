@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2017-2019 Alejandro Sirgo Rica & Contributors
 
 #include "rectangletool.h"
+#include "src/utils/confighandler.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <cmath>
@@ -44,24 +45,34 @@ void RectangleTool::process(QPainter& painter, const QPixmap& pixmap)
     Q_UNUSED(pixmap)
     QPen orig_pen = painter.pen();
     QBrush orig_brush = painter.brush();
-    painter.setPen(
-      QPen(color(), size(), Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin));
-    painter.setBrush(QBrush(color()));
-    if (size() == 0) {
-        painter.drawRect(QRect(points().first, points().second));
+    // flameshot-ocr: 填充开关 —— 关 = 只显示边框（描边矩形）
+    const bool filled = ConfigHandler().shapeFill();
+    const int penWidth = qMax(2, size());
+    painter.setPen(QPen(color(), penWidth, Qt::SolidLine, Qt::SquareCap,
+                        Qt::RoundJoin));
+    if (!filled) {
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRect(points().first, points().second).normalized());
     } else {
-        QPainterPath path;
-        int offset =
-          size() <= 1 ? 1 : static_cast<int>(round(size() / 2 + 0.5));
-        path.addRoundedRect(
-          QRectF(
-            std::min(points().first.x(), points().second.x()) - offset,
-            std::min(points().first.y(), points().second.y()) - offset,
-            std::abs(points().first.x() - points().second.x()) + offset * 2,
-            std::abs(points().first.y() - points().second.y()) + offset * 2),
-          size(),
-          size());
-        painter.fillPath(path, color());
+        painter.setBrush(QBrush(color()));
+        if (size() == 0) {
+            painter.drawRect(QRect(points().first, points().second));
+        } else {
+            QPainterPath path;
+            int offset =
+              size() <= 1 ? 1 : static_cast<int>(round(size() / 2 + 0.5));
+            path.addRoundedRect(
+              QRectF(
+                std::min(points().first.x(), points().second.x()) - offset,
+                std::min(points().first.y(), points().second.y()) - offset,
+                std::abs(points().first.x() - points().second.x()) +
+                  offset * 2,
+                std::abs(points().first.y() - points().second.y()) +
+                  offset * 2),
+              size(),
+              size());
+            painter.fillPath(path, color());
+        }
     }
     painter.setPen(orig_pen);
     painter.setBrush(orig_brush);

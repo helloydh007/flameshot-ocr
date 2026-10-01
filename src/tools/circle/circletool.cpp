@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2017-2019 Alejandro Sirgo Rica & Contributors
 
 #include "circletool.h"
+#include "src/utils/confighandler.h"
 #include <QPainter>
 
 CircleTool::CircleTool(QObject* parent)
@@ -40,8 +41,13 @@ CaptureTool* CircleTool::copy(QObject* parent)
 void CircleTool::process(QPainter& painter, const QPixmap& pixmap)
 {
     Q_UNUSED(pixmap)
+    QBrush orig_brush = painter.brush();
     painter.setPen(QPen(color(), size()));
-    painter.drawEllipse(QRect(points().first, points().second));
+    // flameshot-ocr: 填充开关（关 = 只显示边框）
+    painter.setBrush(ConfigHandler().shapeFill() ? QBrush(color())
+                                                 : Qt::NoBrush);
+    painter.drawEllipse(QRect(points().first, points().second).normalized());
+    painter.setBrush(orig_brush);
 }
 
 void CircleTool::pressed(CaptureContext& context)

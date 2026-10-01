@@ -32,6 +32,7 @@ signals:
     void undoRequested();
     void redoRequested();
     void eraserRequested();
+    void fillToggled();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -42,5 +43,6 @@ private:
     QVector<QPair<CaptureTool::Type, QToolButton*>> m_toolButtons;
     QToolButton* m_colorBtn = nullptr;
     QToolButton* m_eraserBtn = nullptr;
+    QToolButton* m_fillBtn = nullptr;
     QColor m_drawColor;
 };
