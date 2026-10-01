@@ -14,6 +14,7 @@
 #include "copytool.h"
 #include "src/tools/abstractpathtool.h"
 #include "src/tools/abstracttwopointtool.h"
+#include "src/tools/pin/pinwidget.h"
 #include "src/config/cacheutils.h"
 #include "src/core/flameshot.h"
 #include "src/core/qguiappcurrentscreen.h"
@@ -42,6 +43,8 @@
 #include <QScreen>
 #include <QShortcut>
 #include <QClipboard>
+#include <QEventLoop>
+#include <QMimeData>
 #include <QToolTip>
 #include <QImage>
 #include <QProcess>
@@ -708,7 +711,110 @@ void CaptureWidget::runSelfTest()
                      : "FAIL")
                << before << "->" << after;
 
-    // ⑤ Esc（有标注时）→ 应弹确认框；定时器替我们按回车确认
+    // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
+    m_selection->show();
+    const QRect selRect(rect().width() * 0.25, rect().height() * 0.25,
+                        rect().width() * 0.4, rect().height() * 0.3);
+    m_selection->setGeometry(selRect);
+    emit m_selection->geometrySettled();
+    m_context.selection = selRect;
+    showxywh();
+    repaint();
+    {
+        const qreal scale = m_context.screenshot.devicePixelRatio();
+        QFont boxFont = font();
+        const QFontMetrics boxMetrics(boxFont);
+        const QString text =
+          QStringLiteral("%1 × %2 px")
+            .arg(QString::number(int(selRect.width() * scale)),
+                 QString::number(int(selRect.height() * scale)));
+        QRect box = boxMetrics.boundingRect(text);
+        box.adjust(0, 0, 10, 12);
+        const QRect labelRect(selRect.left(), selRect.top() - box.height() - 6,
+                              box.width(), box.height());
+        const QImage grabbed = grab(labelRect.adjusted(-15, -15, 45, 45))
+                                 .toImage();
+        grabbed.save(QStringLiteral("/tmp/label_grab.png"));
+        int darkPixels = 0;
+        int whitePixels = 0;
+        for (int y = 0; y < grabbed.height(); ++y) {
+            for (int x = 0; x < grabbed.width(); ++x) {
+                const QColor c = grabbed.pixelColor(x, y);
+                if (c.red() < 70 && c.green() < 70 && c.blue() < 90) {
+                    ++darkPixels;
+                } else if (c.red() > 225 && c.green() > 225 &&
+                           c.blue() > 225) {
+                    ++whitePixels;
+                }
+            }
+        }
+        qWarning() << "SELFTEST 4 label-render:"
+                   << ((darkPixels > 100 && whitePixels > 20) ? "PASS"
+                                                              : "FAIL")
+                   << "dark:" << darkPixels << "white:" << whitePixels;
+    }
+
+    // ⑥ 钉图：工具条可见 + 滚轮双向缩放 + 复制含图
+    {
+        const QPixmap pinSource = m_context.origScreenshot.scaled(
+          400, 300, Qt::KeepAspectRatio, Qt::FastTransformation);
+        auto* pin = new PinWidget(pinSource, QRect(150, 150, 400, 300));
+        pin->show();
+        for (int i = 0; i < 5; ++i) {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        auto* toolBar = pin->findChild<QWidget*>(QStringLiteral("pinToolBar"));
+        qWarning() << "SELFTEST 5 pin-toolbar:"
+                   << ((toolBar && toolBar->isVisible()) ? "PASS" : "FAIL");
+
+        const int baseHeight = pin->height();
+        for (int i = 0; i < 3; ++i) {
+            QWheelEvent up(QPointF(200, 200), QPointF(200, 200), QPoint(0, 0),
+                           QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
+                           Qt::NoScrollPhase, false);
+            QApplication::sendEvent(pin, &up);
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        pin->grab();
+        const int upHeight = pin->height();
+        for (int i = 0; i < 6; ++i) {
+            QWheelEvent down(QPointF(200, 200), QPointF(200, 200),
+                             QPoint(0, 0), QPoint(0, -120), Qt::NoButton,
+                             Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(pin, &down);
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        pin->grab();
+        const int downHeight = pin->height();
+        qWarning() << "SELFTEST 4 wheel-zoom:"
+                   << ((upHeight > baseHeight && downHeight < upHeight)
+                         ? "PASS"
+                         : "FAIL")
+                   << "base:" << baseHeight << "up:" << upHeight
+                   << "down:" << downHeight;
+
+        pin->copyToClipboard();
+        bool hasImage = false;
+        QStringList clipboardFormats;
+        for (int i = 0; i < 30 && !hasImage; ++i) {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            const QMimeData* mime = QGuiApplication::clipboard()->mimeData();
+            hasImage = mime && mime->hasImage();
+            if (!hasImage && mime) {
+                clipboardFormats = mime->formats();
+            }
+        }
+        qWarning() << "SELFTEST 5 pin-copy:"
+                   << ((hasImage || clipboardFormats.contains(
+                                          QStringLiteral("image/png")))
+                         ? "PASS"
+                         : "FAIL")
+                   << clipboardFormats;
+        pin->close();
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+
+    // ⑦ Esc（有标注时）→ 应弹确认框；定时器替我们按回车确认
     QTimer::singleShot(600, this, [this]() {
         if (m_quitPrompt && m_quitPrompt->isVisible()) {
             QCoreApplication::postEvent(m_quitPrompt,

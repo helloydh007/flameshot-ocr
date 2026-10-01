@@ -25,6 +25,9 @@ public:
                        const QRect& geometry,
                        QWidget* parent = nullptr);
 
+    // 复制到剪贴板（含标注合成）
+    void copyToClipboard();
+
 protected:
     void mouseDoubleClickEvent(QMouseEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
@@ -74,7 +77,6 @@ private:
 
 private slots:
     void showContextMenu(const QPoint& pos);
-    void copyToClipboard();
     void saveToFile();
     void runOcr();
 };
