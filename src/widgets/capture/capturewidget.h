@@ -107,6 +107,10 @@ private slots:
     void openSettings();
     void updatePreToolbar();
     void positionPreToolbar();
+    void runSelfTest();
+    void synthMousePress(const QPoint& pos);
+    void synthMouseMove(const QPoint& pos);
+    void synthMouseRelease(const QPoint& pos);
 
 public:
     void removeToolObject(int index = -1);

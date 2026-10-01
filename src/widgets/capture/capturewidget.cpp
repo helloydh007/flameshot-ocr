@@ -388,6 +388,12 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
             runOcr();
         });
     }
+
+    // flameshot-ocr: 状态机自测 —— 用合成鼠标事件驱动真实处理器，
+    // 运行时验证「自动收笔/点击选中/角点缩放/Esc 确认」
+    if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
+        QTimer::singleShot(1500, this, &CaptureWidget::runSelfTest);
+    }
 }
 
 CaptureWidget::~CaptureWidget()
@@ -623,6 +629,100 @@ void CaptureWidget::onColorGrabAborted()
         m_colorGrabber = nullptr;
     }
     updatePreToolbar();
+}
+
+// flameshot-ocr: 合成鼠标事件自测（FLAMESHOT_OCR_SELFTEST=1）
+void CaptureWidget::synthMousePress(const QPoint& pos)
+{
+    QMouseEvent press(QEvent::MouseButtonPress,
+                      QPointF(pos),
+                      QPointF(pos),
+                      Qt::LeftButton,
+                      Qt::LeftButton,
+                      Qt::NoModifier);
+    mousePressEvent(&press);
+}
+
+void CaptureWidget::synthMouseMove(const QPoint& pos)
+{
+    QMouseEvent move(QEvent::MouseMove,
+                     QPointF(pos),
+                     QPointF(pos),
+                     Qt::NoButton,
+                     Qt::LeftButton,
+                     Qt::NoModifier);
+    mouseMoveEvent(&move);
+}
+
+void CaptureWidget::synthMouseRelease(const QPoint& pos)
+{
+    QMouseEvent release(QEvent::MouseButtonRelease,
+                        QPointF(pos),
+                        QPointF(pos),
+                        Qt::LeftButton,
+                        Qt::NoButton,
+                        Qt::NoModifier);
+    mouseReleaseEvent(&release);
+}
+
+void CaptureWidget::runSelfTest()
+{
+    // ① 免选区画笔画一笔 → 应自动收笔
+    setState(m_buttonsByType.value(CaptureTool::TYPE_PENCIL));
+    synthMousePress(QPoint(300, 300));
+    synthMouseMove(QPoint(350, 340));
+    synthMouseMove(QPoint(400, 380));
+    synthMouseRelease(QPoint(400, 380));
+    qWarning() << "SELFTEST 3a auto-disarm:"
+               << (m_activeButton == nullptr ? "PASS" : "FAIL")
+               << "cursor:" << cursor().shape();
+
+    // ② 点击笔迹 → 对象被选中，光标应为移动
+    synthMousePress(QPoint(350, 340));
+    const bool selected = m_panel->activeLayerIndex() >= 0;
+    qWarning() << "SELFTEST 3b click-select:"
+               << (selected ? "PASS" : "FAIL")
+               << "cursor:" << cursor().shape();
+
+    // ③ 角点命中测试
+    auto object = activeToolObject();
+    const QRect before =
+      object ? object->boundingRect().normalized() : QRect();
+    const QPoint corner = before.topLeft();
+    const int handle = objectResizeHandleAt(corner);
+    qWarning() << "SELFTEST 3c handle-hit:"
+               << (handle > 0 ? "PASS" : "FAIL") << "handle:" << handle
+               << "rect:" << before;
+
+    // ④ 拖左上角向左上 → 包围盒应变大
+    synthMousePress(corner);
+    synthMouseMove(corner - QPoint(60, 60));
+    synthMouseRelease(corner - QPoint(60, 60));
+    const QRect after =
+      activeToolObject() ? activeToolObject()->boundingRect().normalized()
+                         : QRect();
+    qWarning() << "SELFTEST 3d resize:"
+               << (!after.isNull() && after.width() > before.width() &&
+                         after.height() > before.height()
+                     ? "PASS"
+                     : "FAIL")
+               << before << "->" << after;
+
+    // ⑤ Esc（有标注时）→ 应弹确认框；定时器替我们按回车确认
+    QTimer::singleShot(600, this, [this]() {
+        if (m_quitPrompt && m_quitPrompt->isVisible()) {
+            QCoreApplication::postEvent(m_quitPrompt,
+                                        new QKeyEvent(QEvent::KeyPress,
+                                                      Qt::Key_Return,
+                                                      Qt::NoModifier));
+        }
+    });
+    deleteToolWidgetOrClose();
+    qWarning() << "SELFTEST 6 esc-confirm:"
+               << (m_quitPrompt && !m_quitPrompt->isVisible()
+                     ? "PASS (prompt shown & accepted)"
+                     : "UNKNOWN");
+    qWarning() << "SELFTEST: end";
 }
 
 // flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口（直接导出，不走析构路径）
