@@ -284,6 +284,10 @@ void PinWidget::buildToolBar()
                      "#pinToolBar QToolButton:checked { background: %1; "
                      "color: #ffffff; }")
         .arg(accent));
+
+    // 关键：把工具条加入钉图主布局（否则它是 0 尺寸子控件、永远不可见/不可用）
+    m_layout->addWidget(m_toolBarRow);
+    adjustSize();
 }
 
 void PinWidget::closePin()

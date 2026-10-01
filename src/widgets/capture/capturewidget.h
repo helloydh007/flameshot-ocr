@@ -208,6 +208,11 @@ private:
     QPoint m_objectResizeStartPos;
     // 缩放期间预烘焙底图（避免每帧全量重绘）
     QPixmap m_resizeBase;
+    // 自适应缩放的增量状态（虚拟位移 + 上一帧鼠标位置）
+    QPointF m_resizeVirtualDelta;
+    QPoint m_resizeLastPos;
+    // 上一帧的缩放目标矩形（增量映射基准，避免复利放大）
+    QRect m_resizeLastRect;
 
     // Main ui color
     QColor m_uiColor;

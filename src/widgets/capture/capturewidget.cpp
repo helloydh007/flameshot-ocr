@@ -800,24 +800,32 @@ void CaptureWidget::runSelfTest()
                      : "FAIL")
                << mvBefore << "->" << mvAfter << "shift:" << shift;
 
-    // 3i: 缩放灵敏度系数生效（固定在 50% 下校验：拖 +100px 只放大 ~50px）
+    // 3i: 自适应增益 —— 慢速微拖精调（慢速增益），快速拖动 1:1 跟手
     {
         const int sensitivity =
           qBound(1, ConfigHandler().resizeSensitivity(), 100);
+        const qreal slowGain = sensitivity / 100.0;
         const QRect gainBefore = lastRect();
         synthMousePress(
           QPoint(gainBefore.right() + 3, gainBefore.center().y()));
-        synthMouseMove(
-          QPoint(gainBefore.right() + 103, gainBefore.center().y()));
-        synthMouseRelease(
-          QPoint(gainBefore.right() + 103, gainBefore.center().y()));
+        // 20 次 2px 微小移动（慢速 → 精调增益）
+        for (int i = 1; i <= 20; ++i) {
+            synthMouseMove(QPoint(gainBefore.right() + 3 + i * 2,
+                                  gainBefore.center().y()));
+        }
+        // 一次 100px 大幅移动（快速 → 1:1 跟手）
+        synthMouseMove(QPoint(gainBefore.right() + 3 + 140,
+                              gainBefore.center().y()));
+        synthMouseRelease(QPoint(gainBefore.right() + 3 + 140,
+                                 gainBefore.center().y()));
         const QRect gainAfter = lastRect();
-        const int expected = 100 * sensitivity / 100;
+        const int expected =
+          100 + qRound(20 * 2 * slowGain); // 快段 100px + 慢段 40px×慢增益
         const int actual = gainAfter.width() - gainBefore.width();
-        qWarning() << "SELFTEST 3i resize-gain-applied:"
-                   << (qAbs(actual - expected) <= 6 ? "PASS" : "FAIL")
-                   << "sensitivity:" << sensitivity << "expected~"
-                   << expected << "actual:" << actual;
+        qWarning() << "SELFTEST 3i adaptive-gain:"
+                   << (qAbs(actual - expected) <= 8 ? "PASS" : "FAIL")
+                   << "slowGain:" << slowGain << "expected~" << expected
+                   << "actual:" << actual;
     }
     // 恢复用户配置的灵敏度
     ConfigHandler().setResizeSensitivity(savedResizeSensitivity);
@@ -885,8 +893,13 @@ void CaptureWidget::runSelfTest()
             QApplication::processEvents(QEventLoop::AllEvents, 50);
         }
         auto* toolBar = pin->findChild<QWidget*>(QStringLiteral("pinToolBar"));
+        // 真实尺寸断言：仅 isVisible() 会放过“未加入布局的 0 尺寸控件”（假阳性）
+        const bool toolBarOk =
+          toolBar && toolBar->isVisible() && toolBar->width() > 150 &&
+          toolBar->height() > 12;
         qWarning() << "SELFTEST 5 pin-toolbar:"
-                   << ((toolBar && toolBar->isVisible()) ? "PASS" : "FAIL");
+                   << (toolBarOk ? "PASS" : "FAIL")
+                   << "size:" << (toolBar ? toolBar->size() : QSize());
 
         const int baseHeight = pin->height();
         for (int i = 0; i < 3; ++i) {
@@ -974,9 +987,11 @@ void CaptureWidget::runSelfTest()
     runConfirmTest(
       "6 esc-confirm",
       [this]() {
-          // 真实升级链：Esc 依次为「取消对象选中 → 取消选区回工具条 → 退出确认」
-          deleteToolWidgetOrClose();
-          deleteToolWidgetOrClose();
+          // 规范化前置状态（消除前序测试对选区/选中的残留影响），
+          // Esc 直达退出确认。
+          // （递增链「取消对象选中 → 取消选区 → 退出确认」见测试 8）
+          m_selection->hide();
+          m_panel->setActiveLayer(-1);
           deleteToolWidgetOrClose();
       },
       true);
@@ -1577,6 +1592,9 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
                     m_objectResizeHandle = handle;
                     m_objectStartRect = candidateRect;
                     m_objectResizeStartPos = e->pos();
+                    m_resizeVirtualDelta = QPointF(0, 0);
+                    m_resizeLastPos = e->pos();
+                    m_resizeLastRect = candidateRect;
                     e->accept();
                     return;
                 }
@@ -1672,15 +1690,36 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
             // 与上游移动对象相同的重绘模式：失效旧区域 → 改对象 →
             // drawToolsData 从原图重画（清残影）→ 再画选择框 → 失效新区域
             update(paddedUpdateRect(object->boundingRect()));
-            // flameshot-ocr: 缩放灵敏度（百分比，拖得比鼠标慢，更易精调；
-            // 可在 flameshot.ini 的 resizeSensitivity 调整，1-100）。
-            // 低灵敏度下用四舍五入，避免小步拖动被整数截断吃掉
-            const int sensitivity =
-              qBound(1, ConfigHandler().resizeSensitivity(), 100);
-            const QPoint rawDelta = e->pos() - m_objectResizeStartPos;
-            const QPoint delta(
-              qRound(rawDelta.x() * sensitivity / 100.0),
-              qRound(rawDelta.y() * sensitivity / 100.0));
+            // flameshot-ocr: 自适应增益缩放 ——
+            // 慢速微拖：按 resizeSensitivity 精调（默认 20% = 比鼠标慢 5 倍）；
+            // 快速拖动：增益升到 1:1，手柄紧跟鼠标（连续拖动、不脱手）。
+            // 增量累积（含小数），慢速微动不会因取整丢失。
+            const QPoint frameDelta = e->pos() - m_resizeLastPos;
+            m_resizeLastPos = e->pos();
+            const qreal slowGain =
+              qBound(0.05, ConfigHandler().resizeSensitivity() / 100.0, 1.0);
+            constexpr qreal SLOW_SPEED = 4.0;   // px/事件
+            constexpr qreal FAST_SPEED = 22.0;  // px/事件
+            const qreal speed = frameDelta.manhattanLength();
+            qreal gain;
+            if (speed >= FAST_SPEED) {
+                gain = 1.0;
+            } else if (speed <= SLOW_SPEED) {
+                gain = slowGain;
+            } else {
+                gain = slowGain + (speed - SLOW_SPEED) /
+                                    (FAST_SPEED - SLOW_SPEED) *
+                                    (1.0 - slowGain);
+            }
+            m_resizeVirtualDelta +=
+              QPointF(frameDelta.x() * gain, frameDelta.y() * gain);
+            if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
+                qWarning() << "RESIZE-DBG frame:" << frameDelta
+                           << "speed:" << speed << "gain:" << gain
+                           << "virtual:" << m_resizeVirtualDelta;
+            }
+            const QPoint delta(qRound(m_resizeVirtualDelta.x()),
+                               qRound(m_resizeVirtualDelta.y()));
             QRect newRect = m_objectStartRect;
             if (m_objectResizeHandle & 1) {
                 newRect.setLeft(newRect.left() + delta.x());
@@ -1696,7 +1735,11 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
             }
             newRect = newRect.normalized();
             if (newRect.width() >= 8 && newRect.height() >= 8) {
-                scaleToolToRect(object, m_objectStartRect, newRect);
+                // 关键：从「上一帧矩形」映射到「本帧矩形」（增量映射）。
+                // 若始终从 m_objectStartRect 映射，已放大过的点位会被
+                // 反复按比例放大（复利效应），导致缩放指数式爆炸、完全失控
+                scaleToolToRect(object, m_resizeLastRect, newRect);
+                m_resizeLastRect = newRect;
                 // 轻量重绘：拷贝预烘焙底图 + 只渲染被拖动对象，
                 // 帧间开销恒定（不随标注数量增长），缩放跟手更平滑
                 if (!m_resizeBase.isNull()) {
@@ -1832,10 +1875,15 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
     const bool wasResizing = m_objectResizing;
     m_objectResizing = false;
     if (wasResizing) {
-        // 缩放结束：写入撤销栈、清空底图、做一次全量重绘恢复正常渲染
+        // 缩放结束：写入撤销栈、清空底图、做一次全量重绘恢复正常渲染，
+        // 并重画选中框/手柄（drawToolsData 会擦掉手柄，重画后
+        // 手柄保持在原位、可立即再次拖动——支持连续缩放）
         pushObjectsStateToUndoStack();
         m_resizeBase = QPixmap();
         drawToolsData();
+        if (m_panel->activeLayerIndex() >= 0) {
+            drawObjectSelection();
+        }
         update();
     }
 
@@ -1997,9 +2045,11 @@ void CaptureWidget::scaleToolToRect(CaptureTool* tool,
     }
     const qreal scaleX = qreal(to.width()) / from.width();
     const qreal scaleY = qreal(to.height()) / from.height();
+    // 注意：用 qRound 而非 int 截断——增量缩放时每帧的增长往往不足
+    // 1 像素，截断会把慢速微调的全部增量逐帧吃掉
     auto mapPoint = [&](const QPoint& p) {
-        return QPoint(to.left() + int((p.x() - from.left()) * scaleX),
-                      to.top() + int((p.y() - from.top()) * scaleY));
+        return QPoint(qRound(to.left() + (p.x() - from.left()) * scaleX),
+                      qRound(to.top() + (p.y() - from.top()) * scaleY));
     };
     if (auto* twoPointTool = dynamic_cast<AbstractTwoPointTool*>(tool)) {
         const auto points = twoPointTool->points();
