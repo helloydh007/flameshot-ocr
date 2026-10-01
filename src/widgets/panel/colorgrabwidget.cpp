@@ -199,21 +199,31 @@ QPoint ColorGrabWidget::cursorPos() const
 QColor ColorGrabWidget::getColorAtPoint(const QPoint& p) const
 {
     if (m_extraZoomActive && geometry().contains(p)) {
-        QPoint point = mapFromGlobal(p);
-        // we divide coordinate-wise to avoid rounding to nearest
-        return m_previewImage.pixel(
-          QPoint(point.x() / ZOOM2, point.y() / ZOOM2));
+        // flameshot-ocr: 预览图与控件尺寸的比例随 dpr 变化，
+        // 按实际比例换算像素下标（原先固定 /ZOOM2 在缩放屏上会取偏）
+        if (m_previewImage.isNull() || width() <= 0 || height() <= 0) {
+            return m_color;
+        }
+        const QPoint point = mapFromGlobal(p);
+        const qreal sx = qreal(m_previewImage.width()) / width();
+        const qreal sy = qreal(m_previewImage.height()) / height();
+        const int ix = qBound(0, int(point.x() * sx),
+                              m_previewImage.width() - 1);
+        const int iy = qBound(0, int(point.y() * sy),
+                              m_previewImage.height() - 1);
+        return m_previewImage.pixel(ix, iy);
     }
+    // flameshot-ocr: 逻辑坐标 → 设备像素（缩放屏取色点精确对准光标）
     QPoint point = p;
-#if defined(Q_OS_MACOS)
     QScreen* currentScreen = QGuiAppCurrentScreen().currentScreen();
     if (currentScreen) {
-        point = QPoint((p.x() - currentScreen->geometry().x()) *
-                         currentScreen->devicePixelRatio(),
-                       (p.y() - currentScreen->geometry().y()) *
-                         currentScreen->devicePixelRatio());
+        const qreal dpr = m_pixmap->devicePixelRatio();
+        point = QPoint(
+          qRound((p.x() - currentScreen->geometry().x()) * dpr),
+          qRound((p.y() - currentScreen->geometry().y()) * dpr));
     }
-#endif
+    point.setX(qBound(0, point.x(), m_pixmap->width() - 1));
+    point.setY(qBound(0, point.y(), m_pixmap->height() - 1));
     QPixmap pixel = m_pixmap->copy(QRect(point, point));
     return pixel.toImage().pixel(0, 0);
 }
@@ -246,18 +256,20 @@ void ColorGrabWidget::updateWidget()
     QRect rect(0, 0, width, width);
 
     auto realCursorPos = cursorPos();
-    auto adjustedCursorPos = realCursorPos;
-
-#if defined(Q_OS_MACOS)
+    // flameshot-ocr: 截图是物理像素（缩放屏如 125% 时 dpr=1.25），
+    // QPixmap::copy 按设备像素取坐标 —— 必须把光标的逻辑坐标换算成
+    // 设备像素后再采样，否则放大镜区域与取色点会整体偏向左上。
+    // 换算用「截图自身」的 dpr（采样对象是截图，须与其像素网格对齐）
+    const qreal dpr = m_pixmap->devicePixelRatio();
     QScreen* currentScreen = QGuiAppCurrentScreen().currentScreen();
+    QPoint adjustedCursorPos = realCursorPos;
     if (currentScreen) {
         adjustedCursorPos =
-          QPoint((realCursorPos.x() - currentScreen->geometry().x()) *
-                   currentScreen->devicePixelRatio(),
-                 (realCursorPos.y() - currentScreen->geometry().y()) *
-                   currentScreen->devicePixelRatio());
+          QPoint(qRound((realCursorPos.x() - currentScreen->geometry().x()) *
+                        dpr),
+                 qRound((realCursorPos.y() - currentScreen->geometry().y()) *
+                        dpr));
     }
-#endif
 
     // flameshot-ocr: 放大镜偏置在光标右下方（不遮挡取色点/放置点），
     // 贴近屏幕右/下边缘时自动翻到另一侧
@@ -278,9 +290,20 @@ void ColorGrabWidget::updateWidget()
     rect.moveTo(topLeft);
     setGeometry(rect);
     // Store a pixmap containing the zoomed-in section around the cursor
-    QRect sourceRect(0, 0, width / zoom, width / zoom);
+    // （采样边长同样按设备像素换算，保持既定放大倍率不变）
+    const int sampleSide = qRound(static_cast<qreal>(width) / zoom * dpr);
+    QRect sourceRect(0, 0, sampleSide, sampleSide);
     sourceRect.moveCenter(adjustedCursorPos);
+    sourceRect = sourceRect.intersected(m_pixmap->rect());
     m_previewImage = m_pixmap->copy(sourceRect).toImage();
+    if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
+        qWarning() << "MAGNIFIER-DBG pixmapDpr:" << dpr
+                   << "screenDpr:"
+                   << (currentScreen ? currentScreen->devicePixelRatio() : 0.0)
+                   << "cursor(logical):" << realCursorPos
+                   << "deviceCenter:" << adjustedCursorPos
+                   << "sampleSide:" << sampleSide;
+    }
     // Repaint
     update();
 }
