@@ -10,6 +10,7 @@ class QVBoxLayout;
 class QGestureEvent;
 class QPinchGesture;
 class QGraphicsDropShadowEffect;
+class OcrPanel;
 
 class PinWidget : public QWidget
 {
@@ -46,6 +47,7 @@ private:
     QVBoxLayout* m_layout;
     QLabel* m_label;
     QGraphicsDropShadowEffect* m_shadowEffect;
+    OcrPanel* m_ocrPanel = nullptr;
     QColor m_baseColor, m_hoverColor;
 
     bool m_expanding{ false };
@@ -59,4 +61,5 @@ private slots:
     void showContextMenu(const QPoint& pos);
     void copyToClipboard();
     void saveToFile();
+    void runOcr();
 };

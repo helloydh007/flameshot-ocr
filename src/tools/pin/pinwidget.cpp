@@ -10,6 +10,8 @@
 #include "screenshotsaver.h"
 #include "src/utils/confighandler.h"
 #include "src/utils/globalvalues.h"
+#include "src/utils/ocrhelper.h"
+#include "src/widgets/capture/ocrpanel.h"
 
 #include <QLabel>
 #include <QMenu>
@@ -288,6 +290,11 @@ void PinWidget::showContextMenu(const QPoint& pos)
             &PinWidget::copyToClipboard);
     contextMenu.addAction(&copyToClipboardAction);
 
+    // flameshot-ocr: 对钉住的图片直接 OCR
+    QAction ocrAction(OcrPanel::tr2("文字识别 (OCR)", "OCR"), this);
+    connect(&ocrAction, &QAction::triggered, this, &PinWidget::runOcr);
+    contextMenu.addAction(&ocrAction);
+
     QAction saveToFileAction(tr("Save to file"), this);
     connect(
       &saveToFileAction, &QAction::triggered, this, &PinWidget::saveToFile);
@@ -331,6 +338,31 @@ void PinWidget::copyToClipboard()
 {
     saveToClipboard(m_pixmap);
 }
+
+// flameshot-ocr: 对钉住的整张图片跑 OCR，结果面板显示在钉图旁边
+void PinWidget::runOcr()
+{
+    if (!m_ocrPanel) {
+        m_ocrPanel = new OcrPanel(nullptr);
+        m_ocrPanel->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint |
+                                   Qt::WindowStaysOnTopHint);
+    }
+    m_ocrPanel->showLoading(geometry());
+    OcrHelper::run(
+      m_pixmap.toImage(), this, [this](bool ok, const QString& result) {
+          if (!m_ocrPanel) {
+              return;
+          }
+          if (!ok) {
+              m_ocrPanel->showFailure(result);
+          } else if (result.isEmpty()) {
+              m_ocrPanel->showFailure();
+          } else {
+              m_ocrPanel->showText(result);
+          }
+      });
+}
+
 void PinWidget::saveToFile()
 {
     hide();

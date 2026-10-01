@@ -14,6 +14,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -363,11 +364,15 @@ void OcrPanel::setMinimized(bool minimized)
 
 void OcrPanel::positionBeside(const QRect& selection)
 {
-    QWidget* parent = parentWidget();
-    if (!parent) {
-        return;
+    // 可用区域：作为截图画布子控件时用画布矩形；顶层窗口（钉图模式）时用屏幕
+    QRect area;
+    if (parentWidget()) {
+        area = parentWidget()->rect();
+    } else {
+        auto* scr = screen();
+        area = scr ? scr->availableGeometry()
+                   : QRect(QPoint(0, 0), QSize(1920, 1080));
     }
-    const QRect area = parent->rect();
     int x = selection.right() + 1 + 12;
     if (x + width() > area.right() - 4) {
         // 右侧放不下时翻到选区左侧
