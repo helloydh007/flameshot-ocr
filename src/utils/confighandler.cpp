@@ -144,8 +144,9 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     OPTION("colorPickFormat"             ,String             ( "hex"         )),
     // flameshot-ocr: rectangle/ellipse fill toggle (false = outline only)
     OPTION("shapeFill"                   ,Bool               ( false         )),
-    // flameshot-ocr: 缩放灵敏度百分比（10-100，默认 50 = 拖动速度的一半）
-    OPTION("resizeSensitivity"           ,BoundedInt         ( 10, 100, 50   )),
+    // flameshot-ocr: 缩放灵敏度百分比（1-100，默认 50 = 拖动速度的一半；
+    // 1 = 比鼠标慢 100 倍，拖 100px 只变化 1px）
+    OPTION("resizeSensitivity"           ,BoundedInt         ( 1, 100, 50   )),
 };
 
 static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {

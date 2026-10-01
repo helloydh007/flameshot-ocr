@@ -707,6 +707,10 @@ void CaptureWidget::runSelfTest()
                << (handle > 0 ? "PASS" : "FAIL") << "handle:" << handle
                << "rect:" << before;
 
+    // 缩放自测段：固定到 50% 灵敏度以保证确定性，结束后恢复用户配置
+    const int savedResizeSensitivity = ConfigHandler().resizeSensitivity();
+    ConfigHandler().setResizeSensitivity(50);
+
     // ④ 拖左上角向左上 → 包围盒应变大
     synthMousePress(corner);
     synthMouseMove(corner - QPoint(60, 60));
@@ -796,10 +800,10 @@ void CaptureWidget::runSelfTest()
                      : "FAIL")
                << mvBefore << "->" << mvAfter << "shift:" << shift;
 
-    // 3i: 缩放灵敏度系数生效（默认 50%：拖 +100px 只放大 ~50px）
+    // 3i: 缩放灵敏度系数生效（固定在 50% 下校验：拖 +100px 只放大 ~50px）
     {
         const int sensitivity =
-          qBound(10, ConfigHandler().resizeSensitivity(), 100);
+          qBound(1, ConfigHandler().resizeSensitivity(), 100);
         const QRect gainBefore = lastRect();
         synthMousePress(
           QPoint(gainBefore.right() + 3, gainBefore.center().y()));
@@ -815,6 +819,8 @@ void CaptureWidget::runSelfTest()
                    << "sensitivity:" << sensitivity << "expected~"
                    << expected << "actual:" << actual;
     }
+    // 恢复用户配置的灵敏度
+    ConfigHandler().setResizeSensitivity(savedResizeSensitivity);
 
     // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
     {
@@ -1666,13 +1672,15 @@ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
             // 与上游移动对象相同的重绘模式：失效旧区域 → 改对象 →
             // drawToolsData 从原图重画（清残影）→ 再画选择框 → 失效新区域
             update(paddedUpdateRect(object->boundingRect()));
-            // flameshot-ocr: 缩放灵敏度（默认 50%，拖得比鼠标慢，更易精调；
-            // 可在 flameshot.ini 的 resizeSensitivity 调整，10-100）
+            // flameshot-ocr: 缩放灵敏度（百分比，拖得比鼠标慢，更易精调；
+            // 可在 flameshot.ini 的 resizeSensitivity 调整，1-100）。
+            // 低灵敏度下用四舍五入，避免小步拖动被整数截断吃掉
             const int sensitivity =
-              qBound(10, ConfigHandler().resizeSensitivity(), 100);
+              qBound(1, ConfigHandler().resizeSensitivity(), 100);
             const QPoint rawDelta = e->pos() - m_objectResizeStartPos;
-            const QPoint delta(rawDelta.x() * sensitivity / 100,
-                               rawDelta.y() * sensitivity / 100);
+            const QPoint delta(
+              qRound(rawDelta.x() * sensitivity / 100.0),
+              qRound(rawDelta.y() * sensitivity / 100.0));
             QRect newRect = m_objectStartRect;
             if (m_objectResizeHandle & 1) {
                 newRect.setLeft(newRect.left() + delta.x());
