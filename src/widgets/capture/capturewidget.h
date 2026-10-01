@@ -189,6 +189,7 @@ private:
     PreToolbar* m_preToolbar = nullptr;
     ColorGrabWidget* m_colorGrabber = nullptr;
     QHash<CaptureTool::Type, CaptureToolButton*> m_buttonsByType;
+    bool m_eraserActive = false;
 
     // Main ui color
     QColor m_uiColor;

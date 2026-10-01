@@ -340,6 +340,28 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
             &PreToolbar::settingsRequested,
             this,
             &CaptureWidget::openSettings);
+    connect(m_preToolbar,
+            &PreToolbar::undoRequested,
+            this,
+            &CaptureWidget::undo);
+    connect(m_preToolbar,
+            &PreToolbar::redoRequested,
+            this,
+            &CaptureWidget::redo);
+    connect(m_preToolbar,
+            &PreToolbar::eraserRequested,
+            this,
+            [this]() {
+                m_eraserActive = !m_eraserActive;
+                if (m_eraserActive && m_activeButton) {
+                    // 橡皮擦与绘制工具互斥
+                    m_activeButton = nullptr;
+                    releaseActiveTool();
+                    updateSelectionState();
+                    updateCursor();
+                }
+                m_preToolbar->setEraserChecked(m_eraserActive);
+            });
     m_preToolbar->show();
     positionPreToolbar();
 
@@ -601,15 +623,17 @@ void CaptureWidget::onColorGrabAborted()
     updatePreToolbar();
 }
 
-// flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口
+// flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口（直接导出，不走析构路径）
 void CaptureWidget::fullscreenCopy()
 {
     if (m_activeTool) {
         commitCurrentTool();
     }
-    m_context.selection = QRect();
-    m_context.request.addTask(CaptureRequest::COPY);
-    handleToolSignal(CaptureTool::REQ_CAPTURE_DONE_OK);
+    const QPixmap capture = pixmap();
+    m_captureDone = true;
+    m_context.request = CaptureRequest::GRAPHICAL_MODE;
+    hide();
+    saveToClipboard(capture);
     close();
 }
 
@@ -618,9 +642,11 @@ void CaptureWidget::saveFullCapture()
     if (m_activeTool) {
         commitCurrentTool();
     }
-    m_context.selection = QRect();
-    m_context.request.addTask(CaptureRequest::SAVE);
-    handleToolSignal(CaptureTool::REQ_CAPTURE_DONE_OK);
+    const QPixmap capture = pixmap();
+    m_captureDone = true;
+    m_context.request = CaptureRequest::GRAPHICAL_MODE;
+    hide();
+    saveToFilesystemGUI(capture);
     close();
 }
 
@@ -1061,6 +1087,18 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
     if (m_preToolbar && m_preToolbar->isVisible()) {
         m_preToolbar->hide();
     }
+    // flameshot-ocr: 橡皮擦模式 —— 点击标注直接删除
+    if (m_eraserActive && e->button() == Qt::LeftButton) {
+        const int index = m_captureToolObjects.find(e->pos(), size());
+        if (index >= 0) {
+            m_captureToolObjectsBackup = m_captureToolObjects;
+            m_captureToolObjects.removeAt(index);
+            pushObjectsStateToUndoStack();
+            drawToolsData();
+        }
+        e->accept();
+        return;
+    }
     if (m_ocrPanel && m_ocrPanel->isVisible()) {
         if (m_ocrPanel->geometry().contains(e->pos())) {
             // 面板区域的事件应由面板处理，兜底防止隐藏面板/触发取色器
@@ -1240,6 +1278,17 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
                 pushToolToStack();
             } else if (!m_toolWidget) {
                 releaseActiveTool();
+            }
+            // flameshot-ocr: 免选区模式下画一笔即自动收笔，
+            // 让用户可以点击标注进行移动/调整
+            if (!m_selection->isVisible() && m_activeButton) {
+                m_activeButton = nullptr;
+                releaseActiveTool();
+                updateSelectionState();
+                updateCursor();
+                if (m_preToolbar) {
+                    m_preToolbar->setToolChecked(CaptureTool::NONE);
+                }
             }
         } else {
             if (m_activeToolIsMoved) {
@@ -2032,6 +2081,11 @@ void CaptureWidget::updateSizeIndicator()
 
 void CaptureWidget::updateCursor()
 {
+    // flameshot-ocr: 橡皮擦模式光标
+    if (m_eraserActive) {
+        setCursor(Qt::PointingHandCursor);
+        return;
+    }
     if (m_colorPicker && m_colorPicker->isVisible()) {
         setCursor(Qt::ArrowCursor);
     } else if (m_activeButton != nullptr &&

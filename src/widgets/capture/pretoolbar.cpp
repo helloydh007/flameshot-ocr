@@ -153,6 +153,32 @@ PreToolbar::PreToolbar(QWidget* parent)
     separator2->setStyleSheet(QStringLiteral("color: #3f3f46;"));
     layout->addWidget(separator2);
 
+    // 撤销 / 重做 / 橡皮擦
+    auto* undoButton = flatButton(this, "undo-variant",
+                                  OcrPanel::tr2("撤销", "Undo"));
+    connect(undoButton, &QToolButton::clicked, this,
+            [this]() { emit undoRequested(); });
+    layout->addWidget(undoButton);
+
+    auto* redoButton = flatButton(this, "redo-variant",
+                                  OcrPanel::tr2("重做", "Redo"));
+    connect(redoButton, &QToolButton::clicked, this,
+            [this]() { emit redoRequested(); });
+    layout->addWidget(redoButton);
+
+    m_eraserBtn = flatButton(this, "delete",
+                             OcrPanel::tr2("橡皮擦（点击标注删除）",
+                                           "Eraser (click an annotation to remove it)"));
+    m_eraserBtn->setCheckable(true);
+    connect(m_eraserBtn, &QToolButton::clicked, this,
+            [this]() { emit eraserRequested(); });
+    layout->addWidget(m_eraserBtn);
+
+    auto* separator3 = new QFrame(this);
+    separator3->setFrameShape(QFrame::VLine);
+    separator3->setStyleSheet(QStringLiteral("color: #3f3f46;"));
+    layout->addWidget(separator3);
+
     auto* fullscreenButton = flatButton(this, "accept",
                                         OcrPanel::tr2("截取全屏并复制",
                                                       "Fullscreen to clipboard"));
@@ -177,11 +203,11 @@ PreToolbar::PreToolbar(QWidget* parent)
     setStyleSheet(QStringLiteral(
       "#preToolbar { background-color: #1a1a1fee; "
       "border: 1px solid #3f3f46; border-radius: 10px; }"
-      "#preToolbar QToolButton { background: transparent; border: none; "
-      "border-radius: 6px; padding: 4px; }"
+      "#preToolbar QToolButton { color: #d6d6dc; background: transparent; "
+      "border: none; border-radius: 6px; padding: 4px; }"
       "#preToolbar QToolButton:hover { background: #3f3f46; }"
-      "#preToolbar QToolButton:checked { background: %1; }"
-      "#preToolbar QToolButton:pressed { background: %1; }")
+      "#preToolbar QToolButton:checked { background: %1; color: #ffffff; }"
+      "#preToolbar QToolButton:pressed { background: %1; color: #ffffff; }")
       .arg(accent));
 }
 
@@ -190,6 +216,20 @@ void PreToolbar::setToolChecked(CaptureTool::Type type)
     m_selectBtn->setChecked(type == CaptureTool::NONE);
     for (auto& entry : m_toolButtons) {
         entry.second->setChecked(entry.first == type);
+    }
+    if (type != CaptureTool::NONE) {
+        setEraserChecked(false);
+    }
+}
+
+void PreToolbar::setEraserChecked(bool checked)
+{
+    m_eraserBtn->setChecked(checked);
+    if (checked) {
+        m_selectBtn->setChecked(false);
+        for (auto& entry : m_toolButtons) {
+            entry.second->setChecked(false);
+        }
     }
 }
 

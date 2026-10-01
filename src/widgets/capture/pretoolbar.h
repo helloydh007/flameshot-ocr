@@ -18,6 +18,7 @@ public:
 
     // NONE = 框选模式（与外部状态同步勾选态）
     void setToolChecked(CaptureTool::Type type);
+    void setEraserChecked(bool checked);
     void setDrawColorPreview(const QColor& color);
 
 signals:
@@ -28,6 +29,9 @@ signals:
     void fullscreenCopyRequested();
     void saveRequested();
     void settingsRequested();
+    void undoRequested();
+    void redoRequested();
+    void eraserRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -36,5 +40,6 @@ private:
     QToolButton* m_selectBtn = nullptr;
     QVector<QPair<CaptureTool::Type, QToolButton*>> m_toolButtons;
     QToolButton* m_colorBtn = nullptr;
+    QToolButton* m_eraserBtn = nullptr;
     QColor m_drawColor;
 };
