@@ -285,8 +285,10 @@ void PinWidget::buildToolBar()
                      "color: #ffffff; }")
         .arg(accent));
 
-    // 关键：把工具条加入钉图主布局（否则它是 0 尺寸子控件、永远不可见/不可用）
+    // 关键：把工具条加入钉图主布局（否则它是 0 尺寸子控件、永远不可见/不可用）；
+    // 默认隐藏，可在钉图右键菜单中开启（pinShowToolbar 记忆选择）
     m_layout->addWidget(m_toolBarRow);
+    m_toolBarRow->setVisible(ConfigHandler().pinShowToolbar());
     adjustSize();
 }
 
@@ -511,6 +513,21 @@ void PinWidget::pinchTriggered(QPinchGesture* gesture)
 void PinWidget::showContextMenu(const QPoint& pos)
 {
     QMenu contextMenu(tr("Context menu"), this);
+
+    // flameshot-ocr: 快捷工具条开关（默认隐藏，此处开启并记忆选择）
+    QAction* toolbarAction = contextMenu.addAction(
+      OcrPanel::tr2("显示快捷工具条", "Show quick toolbar"));
+    toolbarAction->setCheckable(true);
+    toolbarAction->setChecked(m_toolBarRow && m_toolBarRow->isVisible());
+    connect(toolbarAction, &QAction::triggered, this, [this](bool checked) {
+        ConfigHandler().setPinShowToolbar(checked);
+        if (m_toolBarRow) {
+            m_toolBarRow->setVisible(checked);
+        }
+        adjustSize();
+        positionAnnotator();
+    });
+    contextMenu.addSeparator();
 
     // flameshot-ocr: 标注工具子菜单
     QMenu* annotateMenu =

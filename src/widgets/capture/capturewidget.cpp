@@ -318,18 +318,17 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
                 if (m_activeButton) {
                     uncheckActiveTool();
                 }
+                if (m_eraserActive) {
+                    m_eraserActive = false;
+                    m_preToolbar->setEraserChecked(false);
+                }
                 m_preToolbar->setToolChecked(CaptureTool::NONE);
                 updatePreToolbar();
             });
     connect(m_preToolbar,
             &PreToolbar::toolRequested,
             this,
-            [this](CaptureTool::Type type) {
-                if (auto* button = m_buttonsByType.value(type)) {
-                    setState(button);
-                }
-                m_preToolbar->setToolChecked(type);
-            });
+            &CaptureWidget::onPreToolbarToolRequested);
     connect(m_preToolbar,
             &PreToolbar::drawColorChanged,
             this,
@@ -591,6 +590,26 @@ void CaptureWidget::positionPreToolbar()
     m_preToolbar->move(qMax(0, (width() - size.width()) / 2), 12);
 }
 
+// flameshot-ocr: 预工具条按钮处理 ——
+// 再次点击已选中的工具 = 取消选中（回到框选态）；点击其它工具自动切换
+void CaptureWidget::onPreToolbarToolRequested(CaptureTool::Type type)
+{
+    if (m_activeButton && activeButtonToolType() == type) {
+        uncheckActiveTool();
+        m_preToolbar->setToolChecked(CaptureTool::NONE);
+        return;
+    }
+    // 选工具时退出橡皮擦模式（两者互斥）
+    if (m_eraserActive) {
+        m_eraserActive = false;
+        m_preToolbar->setEraserChecked(false);
+    }
+    if (auto* button = m_buttonsByType.value(type)) {
+        setState(button);
+    }
+    m_preToolbar->setToolChecked(type);
+}
+
 // flameshot-ocr: 取色（按 colorPickFormat 自动复制）
 void CaptureWidget::openColorGrab()
 {
@@ -830,6 +849,17 @@ void CaptureWidget::runSelfTest()
     // 恢复用户配置的灵敏度
     ConfigHandler().setResizeSensitivity(savedResizeSensitivity);
 
+    // 3j: 工具按钮再点一次 → 取消选中（走生产处理函数）
+    {
+        onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
+        const bool armed = (m_activeButton != nullptr);
+        onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
+        const bool disarmed = (m_activeButton == nullptr);
+        qWarning() << "SELFTEST 3j tool-toggle-off:"
+                   << ((armed && disarmed) ? "PASS" : "FAIL")
+                   << "armed:" << armed << "afterSecondClick:" << disarmed;
+    }
+
     // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
     {
         // 取色放大镜：startGrabbing 后无需移动鼠标即应可见
@@ -893,13 +923,25 @@ void CaptureWidget::runSelfTest()
             QApplication::processEvents(QEventLoop::AllEvents, 50);
         }
         auto* toolBar = pin->findChild<QWidget*>(QStringLiteral("pinToolBar"));
-        // 真实尺寸断言：仅 isVisible() 会放过“未加入布局的 0 尺寸控件”（假阳性）
-        const bool toolBarOk =
-          toolBar && toolBar->isVisible() && toolBar->width() > 150 &&
-          toolBar->height() > 12;
-        qWarning() << "SELFTEST 5 pin-toolbar:"
+        // 默认隐藏
+        const bool defaultHidden = toolBar && !toolBar->isVisible();
+        qWarning() << "SELFTEST 5 pin-toolbar-default-hidden:"
+                   << (defaultHidden ? "PASS" : "FAIL");
+        // 开启后应具有真实尺寸（仅 isVisible() 会放过“未加入布局的 0 尺寸控件”）
+        ConfigHandler().setPinShowToolbar(true);
+        auto* pin2 = new PinWidget(pinSource, QRect(150, 150, 400, 300));
+        pin2->show();
+        for (int i = 0; i < 5; ++i) {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        auto* toolBar2 =
+          pin2->findChild<QWidget*>(QStringLiteral("pinToolBar"));
+        const bool toolBarOk = toolBar2 && toolBar2->isVisible() &&
+                               toolBar2->width() > 150 && toolBar2->height() > 12;
+        qWarning() << "SELFTEST 5 pin-toolbar-toggle:"
                    << (toolBarOk ? "PASS" : "FAIL")
-                   << "size:" << (toolBar ? toolBar->size() : QSize());
+                   << "size:" << (toolBar2 ? toolBar2->size() : QSize());
+        ConfigHandler().setPinShowToolbar(false);
 
         const int baseHeight = pin->height();
         for (int i = 0; i < 3; ++i) {
@@ -1187,6 +1229,9 @@ void CaptureWidget::resetSelectionToToolbar()
     updateSelectionState();
     updateCursor();
     updatePreToolbar();
+    // 整屏重绘：否则选区外的压暗层会以“与选区等大的亮斑”形式残留
+    // （未失效的区域仍显示上一帧的压暗画面）
+    update();
 }
 
 bool CaptureWidget::promptQuit()

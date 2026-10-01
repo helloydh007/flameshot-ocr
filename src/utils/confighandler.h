@@ -142,6 +142,7 @@ public:
     CONFIG_GETTER_SETTER(colorPickFormat, setColorPickFormat, QString)
     CONFIG_GETTER_SETTER(shapeFill, setShapeFill, bool)
     CONFIG_GETTER_SETTER(resizeSensitivity, setResizeSensitivity, int)
+    CONFIG_GETTER_SETTER(pinShowToolbar, setPinShowToolbar, bool)
     CONFIG_GETTER_SETTER(showSelectionGeometryHideTime,
                          showSelectionGeometryHideTime,
                          int)

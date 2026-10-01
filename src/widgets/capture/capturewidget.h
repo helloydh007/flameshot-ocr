@@ -108,6 +108,7 @@ private slots:
     void updatePreToolbar();
     void positionPreToolbar();
     void resetSelectionToToolbar();
+    void onPreToolbarToolRequested(CaptureTool::Type type);
     void runSelfTest();
     void synthMousePress(const QPoint& pos);
     void synthMouseMove(const QPoint& pos);

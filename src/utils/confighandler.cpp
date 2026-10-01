@@ -147,6 +147,8 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     // flameshot-ocr: 缩放灵敏度百分比（1-100，默认 50 = 拖动速度的一半；
     // 1 = 比鼠标慢 100 倍，拖 100px 只变化 1px）
     OPTION("resizeSensitivity"           ,BoundedInt         ( 1, 100, 50   )),
+    // flameshot-ocr: 钉图快捷工具条默认隐藏（可在钉图右键菜单中开启）
+    OPTION("pinShowToolbar"              ,Bool               ( false         )),
 };
 
 static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {
