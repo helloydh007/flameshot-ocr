@@ -34,14 +34,19 @@ protected:
     // （否则会触发隐藏面板、取色器、笔刷大小转轮等画布行为）
     void wheelEvent(QWheelEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
+    // 命中测试：返回事件位置命中的边缘（Left/Right/Top/Bottom 位或组合），
+    // 用于边缘拉伸调整大小
+    int edgeAt(const QPoint& pos) const;
     void positionBeside(const QRect& selection);
     void setMinimized(bool minimized);
 
+    QWidget* m_header;
     QLabel* m_titleLabel;
     QToolButton* m_minButton;
     QToolButton* m_closeButton;
@@ -51,4 +56,11 @@ private:
     QLabel* m_statusLabel;
     bool m_minimized = false;
     QSize m_expandedSize;
+
+    // 标题栏拖动 + 边缘缩放状态
+    bool m_dragging = false;
+    QPoint m_dragOffset;
+    int m_resizeEdge = 0;
+    QRect m_startGeo;
+    QPoint m_startGlobal;
 };

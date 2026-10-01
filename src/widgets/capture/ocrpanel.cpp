@@ -18,17 +18,35 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+namespace
+{
+constexpr int RESIZE_MARGIN = 8;   // 边缘拉伸热区宽度
+constexpr int MIN_PANEL_W = 240;
+constexpr int MIN_PANEL_H = 120;
+enum Edge
+{
+    NoEdge = 0,
+    Left = 1,
+    Right = 2,
+    Top = 4,
+    Bottom = 8
+};
+}
+
 OcrPanel::OcrPanel(QWidget* parent)
   : QWidget(parent)
 {
     setObjectName(QStringLiteral("ocrPanel"));
+    setMouseTracking(true);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(10, 8, 10, 10);
     layout->setSpacing(6);
 
-    // 标题行：标题 + 最小化/关闭按钮
-    auto* header = new QHBoxLayout();
+    // 标题行：标题 + 最小化/关闭按钮（整体可拖动）
+    m_header = new QWidget(this);
+    auto* header = new QHBoxLayout(m_header);
+    header->setContentsMargins(0, 0, 0, 0);
     header->setSpacing(4);
     m_titleLabel = new QLabel(tr2("文字识别", "OCR"), this);
     m_titleLabel->setObjectName(QStringLiteral("ocrTitle"));
@@ -48,7 +66,7 @@ OcrPanel::OcrPanel(QWidget* parent)
     m_closeButton->setAutoRaise(true);
     m_closeButton->setCursor(Qt::PointingHandCursor);
     header->addWidget(m_closeButton);
-    layout->addLayout(header);
+    layout->addWidget(m_header);
 
     // 内容区：识别文本 + 底部状态/复制按钮（最小化时整体隐藏）
     m_body = new QWidget(this);
@@ -147,20 +165,140 @@ void OcrPanel::wheelEvent(QWheelEvent* event)
     event->accept();
 }
 
+int OcrPanel::edgeAt(const QPoint& pos) const
+{
+    const QRect r = rect();
+    int e = NoEdge;
+    if (pos.x() <= r.left() + RESIZE_MARGIN) {
+        e |= Left;
+    }
+    if (pos.x() >= r.right() - RESIZE_MARGIN) {
+        e |= Right;
+    }
+    if (pos.y() <= r.top() + RESIZE_MARGIN) {
+        e |= Top;
+    }
+    if (pos.y() >= r.bottom() - RESIZE_MARGIN) {
+        e |= Bottom;
+    }
+    return e;
+}
+
 void OcrPanel::mousePressEvent(QMouseEvent* event)
 {
-    // 点在面板上不隐藏面板、不触发取色器
+    if (event->button() == Qt::LeftButton && !m_minimized) {
+        const int edge = edgeAt(event->pos());
+        if (edge != NoEdge) {
+            // 边缘：开始拉伸调整大小
+            m_resizeEdge = edge;
+            m_startGeo = geometry();
+            m_startGlobal = event->globalPosition().toPoint();
+            event->accept();
+            return;
+        }
+        if (m_header->geometry().contains(event->pos())) {
+            // 标题栏：开始拖动
+            m_dragging = true;
+            m_dragOffset = event->globalPosition().toPoint() - pos();
+            event->accept();
+            return;
+        }
+    }
+    // 其余按下面板区域：只阻断向画布的冒泡
+    event->accept();
+}
+
+void OcrPanel::mouseMoveEvent(QMouseEvent* event)
+{
+    const QPoint global = event->globalPosition().toPoint();
+    if (m_resizeEdge != NoEdge) {
+        QRect r = m_startGeo;
+        const QPoint delta = global - m_startGlobal;
+        if (m_resizeEdge & Left) {
+            r.setLeft(r.left() + delta.x());
+        }
+        if (m_resizeEdge & Right) {
+            r.setRight(r.right() + delta.x());
+        }
+        if (m_resizeEdge & Top) {
+            r.setTop(r.top() + delta.y());
+        }
+        if (m_resizeEdge & Bottom) {
+            r.setBottom(r.bottom() + delta.y());
+        }
+        r = r.normalized();
+        // 最小尺寸约束
+        if (r.width() < MIN_PANEL_W) {
+            if (m_resizeEdge & Left) {
+                r.setLeft(r.right() - MIN_PANEL_W + 1);
+            } else {
+                r.setRight(r.left() + MIN_PANEL_W - 1);
+            }
+        }
+        if (r.height() < MIN_PANEL_H) {
+            if (m_resizeEdge & Top) {
+                r.setTop(r.bottom() - MIN_PANEL_H + 1);
+            } else {
+                r.setBottom(r.top() + MIN_PANEL_H - 1);
+            }
+        }
+        // 限制在截图画布内
+        if (parentWidget()) {
+            r = r.intersected(parentWidget()->rect());
+        }
+        if (r.width() >= MIN_PANEL_W && r.height() >= MIN_PANEL_H) {
+            setGeometry(r);
+        }
+        event->accept();
+        return;
+    }
+    if (m_dragging) {
+        QPoint p = global - m_dragOffset;
+        if (parentWidget()) {
+            const QRect area = parentWidget()->rect();
+            p.setX(qBound(0, p.x(), qMax(0, area.width() - width())));
+            p.setY(qBound(0, p.y(), qMax(0, area.height() - height())));
+        }
+        move(p);
+        event->accept();
+        return;
+    }
+    // 悬停光标提示：边缘=缩放，标题栏=移动
+    if (m_minimized) {
+        setCursor(Qt::ArrowCursor);
+    } else {
+        const int edge = edgeAt(event->pos());
+        if (edge == Left || edge == Right) {
+            setCursor(Qt::SizeHorCursor);
+        } else if (edge == Top || edge == Bottom) {
+            setCursor(Qt::SizeVerCursor);
+        } else if (edge == (Left | Top) || edge == (Right | Bottom)) {
+            setCursor(Qt::SizeFDiagCursor);
+        } else if (edge == (Top | Right) || edge == (Bottom | Left)) {
+            setCursor(Qt::SizeBDiagCursor);
+        } else if (m_header->geometry().contains(event->pos())) {
+            setCursor(Qt::SizeAllCursor);
+        } else {
+            setCursor(Qt::ArrowCursor);
+        }
+    }
     event->accept();
 }
 
 void OcrPanel::mouseReleaseEvent(QMouseEvent* event)
 {
+    m_dragging = false;
+    m_resizeEdge = NoEdge;
     event->accept();
 }
 
 void OcrPanel::mouseDoubleClickEvent(QMouseEvent* event)
 {
-    // 双击选词仍由 QPlainTextEdit 处理，这里只阻断向画布的冒泡
+    // 双击标题栏 = 最小化/恢复；文本区双击选词仍由 QPlainTextEdit 处理
+    if (event->button() == Qt::LeftButton &&
+        m_header->geometry().contains(event->pos())) {
+        setMinimized(!m_minimized);
+    }
     event->accept();
 }
 
@@ -216,7 +354,7 @@ void OcrPanel::setMinimized(bool minimized)
         m_expandedSize = size();
         m_body->hide();
         // 只留标题条（上下边距 8+10 + 标题行高）
-        resize(width(), m_titleLabel->sizeHint().height() + 18);
+        resize(width(), m_header->sizeHint().height() + 18);
     } else {
         m_body->show();
         resize(m_expandedSize.isValid() ? m_expandedSize : QSize(320, 300));
