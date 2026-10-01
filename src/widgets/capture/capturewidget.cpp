@@ -894,6 +894,10 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
 {
     activateWindow();
     if (m_ocrPanel && m_ocrPanel->isVisible()) {
+        if (m_ocrPanel->geometry().contains(e->pos())) {
+            // 面板区域的事件应由面板处理，兜底防止隐藏面板/触发取色器
+            return;
+        }
         m_ocrPanel->hide();
     }
     m_startMove = false;

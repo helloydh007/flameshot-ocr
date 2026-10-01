@@ -4,14 +4,18 @@
 #include "ocrpanel.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLocale>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 OcrPanel::OcrPanel(QWidget* parent)
   : QWidget(parent)
@@ -51,6 +55,28 @@ OcrPanel::OcrPanel(QWidget* parent)
         m_statusLabel->setText(tr2("已复制 ✓", "Copied ✓"));
     });
 
+    // 中文右键菜单（复制/全选），替代 QPlainTextEdit 默认的英文菜单
+    m_textEdit->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_textEdit,
+            &QWidget::customContextMenuRequested,
+            this,
+            [this](const QPoint& pos) {
+                QMenu menu(m_textEdit);
+                QAction* copyAct = menu.addAction(tr2("复制", "Copy"));
+                copyAct->setEnabled(m_textEdit->textCursor().hasSelection());
+                QAction* selectAllAct =
+                  menu.addAction(tr2("全选", "Select all"));
+                selectAllAct->setEnabled(!m_textEdit->toPlainText().isEmpty());
+                QAction* chosen = menu.exec(m_textEdit->mapToGlobal(pos));
+                if (chosen == copyAct) {
+                    QApplication::clipboard()->setText(
+                      m_textEdit->textCursor().selectedText());
+                    m_statusLabel->setText(tr2("已复制 ✓", "Copied ✓"));
+                } else if (chosen == selectAllAct) {
+                    m_textEdit->selectAll();
+                }
+            });
+
     setStyleSheet(QStringLiteral(
       "#ocrTitle { color: #e6e6e6; font-weight: bold; font-size: 13px; }"
       "#ocrText { background-color: #26262b; color: #ececec; border: none; "
@@ -77,6 +103,35 @@ void OcrPanel::paintEvent(QPaintEvent*)
     painter.setPen(QPen(QColor(63, 63, 70), 1));
     painter.setBrush(QColor(26, 26, 31, 245));
     painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
+}
+
+void OcrPanel::wheelEvent(QWheelEvent* event)
+{
+    // 滚轮只用于滚动识别结果，不让画布把滚动当成“调整笔刷大小”
+    event->accept();
+}
+
+void OcrPanel::mousePressEvent(QMouseEvent* event)
+{
+    // 点在面板上不隐藏面板、不触发取色器
+    event->accept();
+}
+
+void OcrPanel::mouseReleaseEvent(QMouseEvent* event)
+{
+    event->accept();
+}
+
+void OcrPanel::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    // 双击选词仍由 QPlainTextEdit 处理，这里只阻断向画布的冒泡
+    event->accept();
+}
+
+void OcrPanel::contextMenuEvent(QContextMenuEvent* event)
+{
+    // 文本框有自己的自定义菜单；面板其余区域不弹画布菜单
+    event->accept();
 }
 
 void OcrPanel::showLoading(const QRect& selection)

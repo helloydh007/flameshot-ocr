@@ -29,6 +29,13 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    // 面板及其子控件未消费的输入事件在此 accept，防止冒泡到 CaptureWidget
+    // （否则会触发隐藏面板、取色器、笔刷大小转轮等画布行为）
+    void wheelEvent(QWheelEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
     void positionBeside(const QRect& selection);
