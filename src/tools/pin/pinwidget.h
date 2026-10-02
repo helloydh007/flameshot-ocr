@@ -50,6 +50,8 @@ private:
     QPixmap compositedPixmap() const;
     void positionAnnotator();
     void buildToolBar();
+    void showOpacityToast();
+    void ensureKeepAboveRule();
 
     void rotateLeft();
     void rotateRight();
@@ -65,6 +67,7 @@ private:
     PinAnnotator* m_annotator = nullptr;
     QWidget* m_toolBarRow = nullptr;
     QToolButton* m_colorButton = nullptr;
+    QLabel* m_opacityToast = nullptr;
     QVector<QPair<PinAnnotator::Tool, QToolButton*>> m_toolButtons;
     QColor m_baseColor, m_hoverColor;
 

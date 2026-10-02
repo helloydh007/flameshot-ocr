@@ -4,6 +4,7 @@
 #include "pinannotator.h"
 #include <QContextMenuEvent>
 #include <QFontMetrics>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -32,7 +33,13 @@ void PinAnnotator::setTool(Tool tool)
         commitPendingText();
     }
     m_tool = tool;
-    setCursor(m_tool == None ? Qt::ArrowCursor : Qt::CrossCursor);
+    if (m_tool == None) {
+        setCursor(Qt::ArrowCursor);
+    } else if (m_tool == Eraser) {
+        setCursor(Qt::PointingHandCursor);
+    } else {
+        setCursor(Qt::CrossCursor);
+    }
 }
 
 void PinAnnotator::setColor(const QColor& color)
@@ -43,6 +50,21 @@ void PinAnnotator::setColor(const QColor& color)
 void PinAnnotator::setWidth(int width)
 {
     m_width = width;
+}
+
+void PinAnnotator::setFill(bool filled)
+{
+    m_fill = filled;
+    // 与截图工具栏行为一致：切换后已有矩形/椭圆同步更新
+    for (PinShape& s : m_shapes) {
+        if (s.type == Rectangle || s.type == Ellipse) {
+            s.filled = filled;
+        }
+    }
+    if (m_current.type == Rectangle || m_current.type == Ellipse) {
+        m_current.filled = filled;
+    }
+    update();
 }
 
 bool PinAnnotator::hasShapes() const
@@ -76,7 +98,10 @@ void PinAnnotator::commitPendingText()
         m_shapes.append(m_current);
     }
     m_textEditing = false;
+    m_preedit.clear();
     m_current = PinShape{};
+    setAttribute(Qt::WA_InputMethodEnabled, false);
+    clearFocus();
     update();
 }
 
@@ -136,7 +161,9 @@ QImage PinAnnotator::renderToImage(const QSize& baseSize) const
 
 QPointF PinAnnotator::toBase(const QPoint& widgetPos) const
 {
-    return QPointF(widgetPos) / m_displayScale;
+    // displayScale = 底图 raw 像素 / 逻辑像素（含 DPR），
+    // widget 逻辑坐标 × displayScale = base raw 坐标
+    return QPointF(widgetPos) * m_displayScale;
 }
 
 // 形状包围盒（命中测试/橡皮擦/旋转共用；基础坐标系）
@@ -159,9 +186,10 @@ QRectF PinAnnotator::shapeRect(const PinShape& s) const
             QFont font;
             font.setPixelSize(TEXT_FONT_PX);
             const QFontMetrics metrics(font);
-            const QString shown =
-              s.text + (m_textEditing && s.type == Text ? QStringLiteral("|")
-                                                        : QString());
+            QString shown = s.text;
+            if (&s == &m_current && m_textEditing) {
+                shown += m_preedit + QStringLiteral("|");
+            }
             // 与绘制锚点一致：boundingRect 以基线为原点，
             // 绘制基线在 points.first() + (0, 字号*0.8)
             QRectF r = metrics.boundingRect(shown);
@@ -286,12 +314,40 @@ void PinAnnotator::renderShapes(QPainter& painter, qreal scale) const
                 break;
             case Rectangle:
                 if (s.points.size() >= 2) {
+                    painter.setPen(QPen(s.color, qMax(2, s.width),
+                                        Qt::SolidLine, Qt::SquareCap,
+                                        Qt::RoundJoin));
+                    painter.setBrush(s.filled ? QBrush(s.color)
+                                              : Qt::NoBrush);
                     painter.drawRect(QRectF(s.points.first(), s.points.last()).normalized());
                 }
                 break;
             case Ellipse:
                 if (s.points.size() >= 2) {
+                    painter.setBrush(s.filled ? QBrush(s.color)
+                                              : Qt::NoBrush);
                     painter.drawEllipse(QRectF(s.points.first(), s.points.last()).normalized());
+                }
+                break;
+            case Pixelate:
+                if (s.points.size() >= 2 && m_basePixmap &&
+                    !m_basePixmap->isNull()) {
+                    const QRectF r =
+                      QRectF(s.points.first(), s.points.last()).normalized();
+                    QRect src = r.toRect().intersected(m_basePixmap->rect());
+                    if (!src.isEmpty()) {
+                        const int block = qMax(6, s.width * 4);
+                        const QSize smallSize(
+                          qMax(1, src.width() / block),
+                          qMax(1, src.height() / block));
+                        const QImage region = m_basePixmap->toImage().copy(src);
+                        const QImage pixelated =
+                          region.scaled(smallSize, Qt::IgnoreAspectRatio,
+                                        Qt::FastTransformation)
+                            .scaled(src.size(), Qt::IgnoreAspectRatio,
+                                    Qt::FastTransformation);
+                        painter.drawImage(r, pixelated);
+                    }
                 }
                 break;
             default:
@@ -337,8 +393,10 @@ void PinAnnotator::mousePressEvent(QMouseEvent* event)
         case Text:
             m_current = PinShape{ Text, m_color, m_width,
                                   { toBase(event->pos()) } };
+            m_current.filled = m_fill;
             m_textEditing = true;
             m_drawing = false;
+            setAttribute(Qt::WA_InputMethodEnabled, true);
             setFocus();
             update();
             break;
@@ -354,6 +412,9 @@ void PinAnnotator::mousePressEvent(QMouseEvent* event)
         default:
             m_current = PinShape{ m_tool, m_color, m_width,
                                   { toBase(event->pos()) } };
+            if (m_tool == Rectangle || m_tool == Ellipse) {
+                m_current.filled = m_fill;
+            }
             m_drawing = true;
             break;
     }
@@ -397,7 +458,11 @@ void PinAnnotator::keyPressEvent(QKeyEvent* event)
         if (!text.isEmpty() && text.at(0).isPrint()) {
             m_current.text += text;
         } else if (event->key() == Qt::Key_Backspace) {
-            m_current.text.chop(1);
+            if (!m_preedit.isEmpty()) {
+                m_preedit.clear();
+            } else {
+                m_current.text.chop(1);
+            }
         } else if (event->key() == Qt::Key_Return ||
                    event->key() == Qt::Key_Enter ||
                    event->key() == Qt::Key_Escape) {
@@ -411,6 +476,49 @@ void PinAnnotator::keyPressEvent(QKeyEvent* event)
         return;
     }
     event->ignore();
+}
+
+// 输入法（拼音等）：预编辑串实时渲染，提交串落盘
+void PinAnnotator::inputMethodEvent(QInputMethodEvent* event)
+{
+    if (!m_textEditing || m_current.type != Text) {
+        event->ignore();
+        return;
+    }
+    if (!event->commitString().isEmpty()) {
+        m_current.text += event->commitString();
+    }
+    m_preedit = event->preeditString();
+    update();
+    event->accept();
+}
+
+QVariant PinAnnotator::inputMethodQuery(Qt::InputMethodQuery query) const
+{
+    // 输入法候选窗定位：跟随文字末尾
+    if (m_textEditing && m_current.type == Text) {
+        switch (query) {
+            case Qt::ImEnabled:
+                return true;
+            case Qt::ImCursorRectangle: {
+                QFont font;
+                font.setPixelSize(TEXT_FONT_PX);
+                const QFontMetrics metrics(font);
+                const qreal w = metrics.horizontalAdvance(
+                  m_current.text + m_preedit);
+                return QRectF(m_current.points.first() +
+                                QPointF(0, TEXT_FONT_PX * 0.8),
+                              QSizeF(w + 4, TEXT_FONT_PX * 1.4));
+            }
+            case Qt::ImSurroundingText:
+                return m_current.text;
+            case Qt::ImCursorPosition:
+                return m_current.text.length();
+            default:
+                break;
+        }
+    }
+    return QWidget::inputMethodQuery(query);
 }
 
 void PinAnnotator::mouseDoubleClickEvent(QMouseEvent* event)

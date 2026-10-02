@@ -45,6 +45,7 @@
 #include <QClipboard>
 #include <QEventLoop>
 #include <QMimeData>
+#include <QInputMethodEvent>
 #include <QLabel>
 #include <QToolButton>
 #include <QPropertyAnimation>
@@ -923,6 +924,8 @@ void CaptureWidget::runSelfTest()
     {
         const QPixmap pinSource = m_context.origScreenshot.scaled(
           400, 300, Qt::KeepAspectRatio, Qt::FastTransformation);
+        // 先归零配置（防上一轮测试把 true 写进 ini 造成断言污染）
+        ConfigHandler().setPinShowToolbar(false);
         auto* pin = new PinWidget(pinSource, QRect(150, 150, 400, 300));
         pin->show();
         for (int i = 0; i < 5; ++i) {
@@ -1110,6 +1113,124 @@ void CaptureWidget::runSelfTest()
                              : "FAIL")
                        << afterErase << "-> undo" << afterUndo << "-> redo"
                        << afterRedo;
+
+            // 16: displayScale 含 DPR（125% 屏应 ≈1.25，修复坐标偏移）
+            {
+                const QPixmap labelPix =
+                  pin2->findChild<QLabel*>()->pixmap();
+                qWarning() << "GEODBG pin2 size:" << pin2->size()
+                           << "label:" << pin2->findChild<QLabel*>()->size()
+                           << "pixmap:" << labelPix.size()
+                           << "dpr:" << labelPix.devicePixelRatio();
+            }
+            qWarning() << "SELFTEST 16 pin-displayscale:"
+                       << (qAbs(annotator->displayScale() - 1.25) < 0.01
+                             ? "PASS"
+                             : "FAIL")
+                       << annotator->displayScale();
+
+            // 17: 填充开关 —— 描边矩形中心透明，填充后不透明
+            annotator->setTool(PinAnnotator::Rectangle);
+            // base 图 raw 500x375（displayScale=1.25）：
+            // annotator (200,80)-(360,160) → base (250,100)-(450,200)
+            annoPress(QPoint(200, 80));
+            annoMove(QPoint(360, 160));
+            annoRelease(QPoint(360, 160));
+            {
+                const QImage outlineImg =
+                  annotator->renderToImage(pin2->findChild<QLabel*>()
+                                             ->pixmap()
+                                             .size());
+                const QColor center1 =
+                  outlineImg.pixelColor(QPoint(350, 150));
+                annotator->setFill(true);
+                const QImage filledImg =
+                  annotator->renderToImage(pin2->findChild<QLabel*>()
+                                             ->pixmap()
+                                             .size());
+                const QColor center2 =
+                  filledImg.pixelColor(QPoint(350, 150));
+                annotator->setFill(false);
+                qWarning() << "SELFTEST 17 pin-fill:"
+                           << (center1.alpha() == 0 && center2.alpha() > 0
+                                 ? "PASS"
+                                 : "FAIL")
+                           << "outline:" << center1.alpha()
+                           << "filled:" << center2.alpha();
+            }
+
+            // 18: 马赛克 —— 采样底图像素化，合成图与原区域不同
+            annotator->setTool(PinAnnotator::Pixelate);
+            // annotator (60,200)-(200,260) → base (75,250)-(250,325)，图内
+            annoPress(QPoint(60, 200));
+            annoMove(QPoint(200, 260));
+            annoRelease(QPoint(200, 260));
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            {
+                const QImage base =
+                  pin2->findChild<QLabel*>()->pixmap().toImage();
+                const QImage composited =
+                  annotator->renderToImage(base.size());
+                bool differs = false;
+                for (int y = 260; y < 315 && !differs; y += 5) {
+                    for (int x = 85; x < 240; x += 10) {
+                        if (base.pixelColor(x, y) !=
+                            composited.pixelColor(x, y)) {
+                            differs = true;
+                            break;
+                        }
+                    }
+                }
+                qWarning() << "SELFTEST 18 pin-pixelate:"
+                           << (annotator->hasShapes() && differs ? "PASS"
+                                                                 : "FAIL");
+            }
+
+            // 19: 输入法 —— commitString 提交中文
+            annotator->setTool(PinAnnotator::Text);
+            annoPress(QPoint(80, 430));
+            QKeyEvent imeStart(QEvent::KeyPress, Qt::Key_Space,
+                               Qt::NoModifier);
+            QApplication::sendEvent(annotator, &imeStart);
+            QInputMethodEvent ime;
+            ime.setCommitString(QStringLiteral("中文"));
+            QApplication::sendEvent(annotator, &ime);
+            QApplication::sendEvent(annotator, &enterEv);
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            qWarning() << "SELFTEST 19 pin-ime:"
+                       << ((annotator->lastShapeText() ==
+                              QStringLiteral("中文"))
+                             ? "PASS"
+                             : "FAIL")
+                       << annotator->lastShapeText();
+
+            // 20: Ctrl+滚轮 —— 透明度变化 + 中央提示
+            {
+                const qreal opBefore = pin2->windowOpacity();
+                QWheelEvent ctrlWheel(
+                  QPointF(200, 200), QPointF(200, 200), QPoint(0, 0),
+                  QPoint(0, -120), Qt::NoButton, Qt::ControlModifier,
+                  Qt::NoScrollPhase, false);
+                QApplication::sendEvent(pin2, &ctrlWheel);
+                QApplication::processEvents(QEventLoop::AllEvents, 50);
+                const qreal opAfter = pin2->windowOpacity();
+                auto* toast = pin2->findChild<QLabel*>();
+                bool toastOk = false;
+                const auto labels = pin2->findChildren<QLabel*>();
+                for (auto* l : labels) {
+                    if (l->isVisible() &&
+                        l->text().contains(
+                          OcrPanel::tr2("透明度", "Opacity"))) {
+                        toastOk = true;
+                    }
+                }
+                qWarning() << "SELFTEST 20 pin-ctrlwheel-opacity:"
+                           << (opAfter < opBefore && toastOk ? "PASS"
+                                                             : "FAIL")
+                           << opBefore << "->" << opAfter
+                           << "toast:" << toastOk;
+                pin2->setWindowOpacity(1.0);
+            }
             fflush(stderr);
         }
 
@@ -2288,6 +2409,9 @@ void CaptureWidget::keyReleaseEvent(QKeyEvent* e)
 
 void CaptureWidget::wheelEvent(QWheelEvent* e)
 {
+    // flameshot-ocr: 滚轮时以当前光标位置显示粗细提示圈
+    // （上游固定放在屏幕左上角，未移动过鼠标时会出现在 (0,0)）
+    m_context.mousePos = mapFromGlobal(QCursor::pos());
     /* Mouse scroll usually gives value 120, not more or less, just how many
      * times.
      * Touchpad gives the value 2 or more (usually 2-8), it doesn't give

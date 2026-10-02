@@ -23,6 +23,8 @@
 #include <QPainter>
 #include <QScreen>
 #include <QShortcut>
+#include <QProcess>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -62,8 +64,14 @@ PinWidget::PinWidget(const QPixmap& pixmap,
     setGraphicsEffect(m_shadowEffect);
     setWindowOpacity(m_opacity);
 
+    // flameshot-ocr: pixmap 贴 label 左上且 label 不被拉伸——
+    // 保证标注层（= label 几何）与图片显示区原点重合，
+    // 否则工具条比图片宽时 pixmap 居中、坐标整体错位
+    m_label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_label->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_label->setPixmap(m_pixmap);
     m_layout->addWidget(m_label);
+    m_layout->setAlignment(m_label, Qt::AlignLeft | Qt::AlignTop);
 
     new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q), this, SLOT(close()));
     new QShortcut(Qt::Key_Escape, this, SLOT(close()));
@@ -122,7 +130,11 @@ PinWidget::PinWidget(const QPixmap& pixmap,
             &PinWidget::showContextMenu);
     positionAnnotator();
     m_annotator->raise();
+    m_annotator->setBasePixmap(&m_pixmap);
+    m_annotator->setDisplayScale(m_pixmap.devicePixelRatio());
+    m_annotator->setFill(ConfigHandler().shapeFill());
     buildToolBar();
+    ensureKeepAboveRule();
 
     new QShortcut(QKeySequence::Undo, this, [this]() {
         m_annotator->undo();
@@ -183,10 +195,30 @@ void PinWidget::buildToolBar()
                   PinAnnotator::Number);
     addToolButton(QStringLiteral("text"),
                   OcrPanel::tr2("添加文字", "Add text"), PinAnnotator::Text);
+    addToolButton(QStringLiteral("pixelate"),
+                  OcrPanel::tr2("马赛克", "Pixelate"),
+                  PinAnnotator::Pixelate);
     addToolButton(QStringLiteral("eraser"),
                   OcrPanel::tr2("橡皮擦（点击标注删除）",
                                 "Eraser (click an annotation to remove it)"),
                   PinAnnotator::Eraser);
+
+    // 形状填充开关（与截图工具栏共享 shapeFill 配置）
+    auto* fillButton = new QToolButton(m_toolBarRow);
+    fillButton->setIcon(QIcon(PathInfo::whiteIconPath() +
+                              QStringLiteral("rectangle")));
+    fillButton->setIconSize(QSize(18, 18));
+    fillButton->setToolTip(
+      OcrPanel::tr2("形状填充：选中 = 实心，未选 = 只显示边框",
+                    "Shape fill: on = solid, off = outline only"));
+    fillButton->setCheckable(true);
+    fillButton->setChecked(ConfigHandler().shapeFill());
+    fillButton->setCursor(Qt::PointingHandCursor);
+    connect(fillButton, &QToolButton::toggled, this, [this](bool checked) {
+        ConfigHandler().setShapeFill(checked);
+        m_annotator->setFill(checked);
+    });
+    layout->addWidget(fillButton);
 
     // 颜色下拉
     m_colorButton = new QToolButton(m_toolBarRow);
@@ -313,8 +345,43 @@ void PinWidget::closePin()
     update();
     close();
 }
+void PinWidget::showOpacityToast()
+{
+    if (!m_opacityToast) {
+        m_opacityToast = new QLabel(this);
+        m_opacityToast->setStyleSheet(
+          QStringLiteral("background-color: #1a1a1fee; color: #ffffff; "
+                         "border: 1px solid %1; border-radius: 6px; "
+                         "padding: 6px 14px; font-size: 14px;")
+            .arg(m_baseColor.name()));
+        m_opacityToast->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_opacityToast->setAlignment(Qt::AlignCenter);
+    }
+    m_opacityToast->setText(
+      OcrPanel::tr2("透明度 %1%", "Opacity %1%")
+        .arg(qRound(m_opacity * 100)));
+    m_opacityToast->adjustSize();
+    m_opacityToast->move((width() - m_opacityToast->width()) / 2,
+                         (height() - m_opacityToast->height()) / 2);
+    m_opacityToast->show();
+    m_opacityToast->raise();
+    QTimer::singleShot(900, m_opacityToast, &QWidget::hide);
+}
+
 bool PinWidget::scrollEvent(QWheelEvent* event)
 {
+    // flameshot-ocr: Ctrl+滚轮 调整透明度，中央显示百分比提示
+    if (event->modifiers() & Qt::ControlModifier) {
+        const int angle = event->angleDelta().y();
+        if (angle != 0) {
+            m_opacity = qBound(0.1, m_opacity + (angle > 0 ? 0.05 : -0.05),
+                               1.0);
+            setWindowOpacity(m_opacity);
+            showOpacityToast();
+        }
+        event->accept();
+        return true;
+    }
     const auto phase = event->phase();
     if (phase == Qt::ScrollPhase::ScrollUpdate
 #if defined(Q_OS_LINUX) || defined(Q_OS_WINDOWS) || defined(Q_OS_MACOS)
@@ -460,6 +527,67 @@ bool PinWidget::event(QEvent* event)
     return QWidget::event(event);
 }
 
+// flameshot-ocr: KWin Wayland 会忽略 Qt 的 WindowStaysOnTopHint，
+// 通过 kwinrulesrc 窗口规则强制 flameshot-pin 窗口置顶（幂等）
+void PinWidget::ensureKeepAboveRule()
+{
+    static bool done = false;
+    if (done) {
+        return;
+    }
+    done = true;
+    const QString desc = QStringLiteral("Flameshot pin keep above");
+    auto read = [](const QString& key, const QString& def = QString()) {
+        QProcess p;
+        p.start(QStringLiteral("kreadconfig6"),
+                { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
+                  QStringLiteral("--group"), QStringLiteral("General"),
+                  QStringLiteral("--key"), key });
+        p.waitForFinished(2000);
+        const QString out =
+          QString::fromLocal8Bit(p.readAllStandardOutput()).trimmed();
+        return out.isEmpty() ? def : out;
+    };
+    bool exists = false;
+    int count = read(QStringLiteral("count")).toInt();
+    for (int i = 1; i <= count && !exists; ++i) {
+        QProcess p;
+        p.start(QStringLiteral("kreadconfig6"),
+                { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
+                  QStringLiteral("--group"), QString::number(i),
+                  QStringLiteral("--key"), QStringLiteral("description") });
+        p.waitForFinished(2000);
+        exists = QString::fromLocal8Bit(p.readAllStandardOutput())
+                   .trimmed() == desc;
+    }
+    if (exists) {
+        return;
+    }
+    const int group = count + 1;
+    auto write = [&](const QString& key, const QString& value) {
+        QProcess::startDetached(
+          QStringLiteral("kwriteconfig6"),
+          { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
+            QStringLiteral("--group"), QString::number(group),
+            QStringLiteral("--key"), key, value });
+    };
+    write(QStringLiteral("description"), desc);
+    write(QStringLiteral("title"), QStringLiteral("flameshot-pin"));
+    write(QStringLiteral("titlematch"), QStringLiteral("2"));
+    write(QStringLiteral("keepon_top"), QStringLiteral("true"));
+    write(QStringLiteral("keepon_toprule"), QStringLiteral("2"));
+    QProcess::startDetached(
+      QStringLiteral("kwriteconfig6"),
+      { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
+        QStringLiteral("--group"), QStringLiteral("General"),
+        QStringLiteral("--key"), QStringLiteral("count"),
+        QString::number(group) });
+    QProcess::startDetached(QStringLiteral("qdbus6"),
+                            { QStringLiteral("org.kde.KWin"),
+                              QStringLiteral("/KWin"),
+                              QStringLiteral("reconfigure") });
+}
+
 void PinWidget::positionAnnotator()
 {
     if (m_annotator) {
@@ -510,8 +638,10 @@ void PinWidget::paintEvent(QPaintEvent* event)
         adjustSize();
         positionAnnotator();
         if (m_annotator && !m_pixmap.isNull()) {
-            m_annotator->setDisplayScale(qreal(pix.width()) /
-                                         m_pixmap.width());
+            // 真实映射 = 底图 DPR / 当前缩放。此前漏掉 DPR，125% 缩放屏上
+            // 标注坐标整体偏小 1.25 倍（橡皮擦点边框删不中的根因）
+            m_annotator->setDisplayScale(m_pixmap.devicePixelRatio() /
+                                         m_scaleFactor);
         }
         m_sizeChanged = false;
     }
