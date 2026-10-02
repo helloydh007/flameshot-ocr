@@ -58,7 +58,10 @@ sudo apt install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng
 ## 构建与安装
 
 ```bash
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+# 注意：必须指定 CMAKE_INSTALL_PREFIX=/usr，否则 CPack 生成的 deb 里
+# desktop 文件的 Exec 会指向构建默认前缀 /usr/local/bin（文件不存在），
+# 导致桌面快捷键（如 F1）唤出失败——本机曾因此踩坑
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build -j$(nproc)
 cpack --config build/CPackConfig.cmake -G DEB   # 可选：生成 deb
 ```
