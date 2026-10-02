@@ -1278,6 +1278,11 @@ void CaptureWidget::runSelfTest()
         qWarning() << "SELFTEST 21 wheel-notifier-follows-cursor:"
                    << (notifierPos == expected ? "PASS" : "FAIL")
                    << "notifier:" << notifierPos << "expected:" << expected;
+        // 视觉留证：提示圈渲染在光标旁（保存提示圈局部截图）
+        if (notifierPos == expected) {
+            const QRect around(notifierPos - QPoint(30, 30), QSize(120, 100));
+            grab(around).save(QStringLiteral("/tmp/notifier_visual.png"));
+        }
     }
 
 
