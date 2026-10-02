@@ -105,6 +105,23 @@ ASan/LSan + 临时文件残留检查验证）：
 OcrPanel 内部资源（审查存疑项）：面板无图片缓存，`showLoading`/`showText` 均
 `clear()` 旧文本，无累积——审查报告的疑虑实测排除。
 
+## 修复：全局快捷键唤起时光标旁残留 KDE 启动图标（2026-10-02）
+
+**现象**：按 F1 唤出截图时，鼠标旁出现 KDE 图标并停留数秒。
+
+**根因链**（读 kglobalacceld 6.3.6 / KIO 6.13 / qtwayland 6.8 源码定位）：
+F1 由 kwin 内嵌的 kglobalacceld 以 `_launch` 处理 → `KIO::ApplicationLauncherJob`
+（Wayland 下不设 startupId）→ `KProcessRunner` 为给新进程焦点凭据，向 kwin 请求
+xdg-activation token（此刻 kwin 在光标旁显示启动反馈图标）→ token 通过
+`XDG_ACTIVATION_TOKEN` 环境变量传给 `flameshot gui` 进程 → 截图遮罩窗口"不抢
+焦点"，Qt 不会在窗口 show 时自动消费该 token → 没人使用 token 完成激活 →
+kwin 的反馈图标一直挂到约 5 秒超时。
+
+**修复**（`CaptureWidget::showEvent`）：检测到 `XDG_ACTIVATION_TOKEN` 时显式调用
+`windowHandle()->requestActivate()`——Qt Wayland 会用环境中的 token 发起
+`xdg_activation.activate`，kwin 收到后立即清除反馈图标（顺带让截图界面获得
+正确的键盘激活）。环境无 token 时零影响（普通终端/托盘启动不受影响）。
+
 ## 许可
 
 与上游一致：GPL-3.0-or-later。

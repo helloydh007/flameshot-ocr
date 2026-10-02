@@ -56,6 +56,7 @@
 #include <functional>
 #include <memory>
 #include <QImage>
+#include <QWindow>
 #include <draggablewidgetmaker.h>
 
 #if !defined(DISABLE_UPDATE_CHECKER)
@@ -3626,4 +3627,17 @@ void CaptureWidget::showEvent(QShowEvent* event)
     connect(fade, &QPropertyAnimation::finished, fade,
             &QPropertyAnimation::deleteLater);
     fade->start(QAbstractAnimation::DeleteWhenStopped);
+
+    // flameshot-ocr: 从全局快捷键（F1）/启动器唤起时，KDE 的启动器会把
+    // xdg-activation token 放进本进程环境（XDG_ACTIVATION_TOKEN）。
+    // 截图遮罩不抢焦点，Qt 不会在 show 时自动消费它；若无人使用该
+    // token，kwin 的启动反馈（光标旁的应用图标）会一直挂到约 5 秒超时。
+    // 这里显式用 token 激活窗口，kwin 收到后立即清除反馈图标。
+    if (!qEnvironmentVariableIsEmpty("XDG_ACTIVATION_TOKEN")) {
+        qDebug() << "flameshot-ocr: consuming XDG_ACTIVATION_TOKEN to clear "
+                    "launch feedback";
+        if (QWindow* handle = windowHandle()) {
+            handle->requestActivate();
+        }
+    }
 }
