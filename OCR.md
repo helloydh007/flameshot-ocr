@@ -105,22 +105,39 @@ ASan/LSan + 临时文件残留检查验证）：
 OcrPanel 内部资源（审查存疑项）：面板无图片缓存，`showLoading`/`showText` 均
 `clear()` 旧文本，无累积——审查报告的疑虑实测排除。
 
-## 修复：全局快捷键唤起时光标旁残留 KDE 启动图标（2026-10-02）
+## 修复：全局快捷键唤起时光标旁出现跳动的蓝色 KDE 齿轮（2026-10-02 终版）
 
-**现象**：按 F1 唤出截图时，鼠标旁出现 KDE 图标并停留数秒。
+**现象**：按 F1 唤出截图时，鼠标旁出现持续跳动的蓝色 KDE 齿轮图标，直到截图
+界面关闭。
 
-**根因链**（读 kglobalacceld 6.3.6 / KIO 6.13 / qtwayland 6.8 源码定位）：
-F1 由 kwin 内嵌的 kglobalacceld 以 `_launch` 处理 → `KIO::ApplicationLauncherJob`
-（Wayland 下不设 startupId）→ `KProcessRunner` 为给新进程焦点凭据，向 kwin 请求
-xdg-activation token（此刻 kwin 在光标旁显示启动反馈图标）→ token 通过
-`XDG_ACTIVATION_TOKEN` 环境变量传给 `flameshot gui` 进程 → 截图遮罩窗口"不抢
-焦点"，Qt 不会在窗口 show 时自动消费该 token → 没人使用 token 完成激活 →
-kwin 的反馈图标一直挂到约 5 秒超时。
+**根因**（读 kglobalacceld 6.3.6 / KIO 6.13 / qtwayland 6.8 / kwin 6.3.6 源码
++ 实测定位）：F1 原先绑定在 kglobalshortcutsrc 的 services `_launch` 上，按键
+时 kwin 内嵌的 kglobalaccel 经 `KIO::ApplicationLauncherJob` 启动新进程，
+`KProcessRunner` 会向 kwin 申请 xdg-activation token——**该请求以 kwin 自己
+的 appId（org.kde.kwin）发出**，kwin 端 `XdgActivationV1Integration::requestToken`
+按该 appId 找桌面文件读 `StartupNotify`（默认 true）→ 显示启动反馈，图标正是
+kwin 的蓝色齿轮。截图遮罩窗口不抢焦点，token 无人消费，反馈一直挂到超时。
+（曾尝试在 `CaptureWidget::showEvent` 里显式 `requestActivate()` 消费 token，
+实测仅消费不取消反馈，故改用下面的釜底抽薪方案。）
 
-**修复**（`CaptureWidget::showEvent`）：检测到 `XDG_ACTIVATION_TOKEN` 时显式调用
-`windowHandle()->requestActivate()`——Qt Wayland 会用环境中的 token 发起
-`xdg_activation.activate`，kwin 收到后立即清除反馈图标（顺带让截图界面获得
-正确的键盘激活）。环境无 token 时零影响（普通终端/托盘启动不受影响）。
+**终版修复——F1 改走「kwin 脚本 + DBus 直调」，不再启动任何进程**：
+
+1. `FlameshotDBusAdapter::captureGui()`（新增 DBus 方法）：在常驻 daemon 进程
+   内直接打开截图界面。
+2. `FlameshotDaemon::ensureF1ShortcutScript()`（自愈式）：daemon 启动时自动
+   写出并加载 kwin 脚本 `~/.local/share/flameshot-ocr/f1-dbus-launch.js`，
+   脚本 `registerShortcut` 把 F1 注册为 `callDBus → org.flameshot.Flameshot.
+   captureGui`。
+3. 键归属迁移（一次性，已在本机执行并持久化）：用 kglobalaccel 标准方法
+   `setShortcutKeys` 先清空 services `_launch` 的 F1、再赋给 kwin 组件的
+   `FlameshotGuiF1`（注意：kglobalaccel 6.3 对冲突键是「跳过」而非「抢夺」，
+   必须先释放后赋值；`setShortcutKeys` 是所有 KDE 应用运行时改键的标准
+   方法，与曾导致 kwin 崩溃的已废弃 `setForeignShortcut` 无关）。
+
+效果：F1 按下 → kwin 脚本 → DBus → daemon 开界面。无进程启动、无 token
+申请、无启动反馈，图标在机制上不可能出现；且省去进程冷启动，唤出更快。
+登录自愈链：autostart 启动 daemon → daemon 加载 kwin 脚本 → 脚本按
+kglobalshortcutrc `[kwin] FlameshotGuiF1=F1` 恢复绑定。
 
 ## 许可
 

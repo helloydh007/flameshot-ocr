@@ -51,6 +51,10 @@ public slots:
     void launcher();
     void config();
 
+    // flameshot-ocr: 无参 DBus 入口 —— kwin 脚本快捷键直调 daemon 打开
+    // 截图界面（不启动新进程，不触发 KDE 的启动反馈/xdg-activation token）
+    void captureGui();
+
     void info();
 
 #ifdef ENABLE_IMGUR

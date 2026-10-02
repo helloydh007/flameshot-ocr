@@ -251,6 +251,16 @@ void Flameshot::info()
     }
 }
 
+// flameshot-ocr: 无参 DBus 入口。kwin 脚本快捷键（F1）通过
+// callDBus 直调本方法，由常驻 daemon 在自身进程内打开截图界面。
+// 相比「_launch 启动新进程」的方式：不产生 xdg-activation token，
+// 从根本上不会触发 kwin 的启动反馈图标（光标旁跳动的 KDE 齿轮），
+// 且省去进程冷启动，唤出更快。
+void Flameshot::captureGui()
+{
+    gui(CaptureRequest(CaptureRequest::GRAPHICAL_MODE, 0, QString()));
+}
+
 #ifdef ENABLE_IMGUR
 void Flameshot::history()
 {

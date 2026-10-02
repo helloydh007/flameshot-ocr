@@ -10,9 +10,13 @@
 #include "src/widgets/trayicon.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QDir>
+#include <QFile>
 #include <QIODevice>
 #include <QPixmap>
+#include <QProcess>
 #include <QRect>
+#include <QStandardPaths>
 
 #if !(defined(Q_OS_MACOS) || defined(Q_OS_WIN))
 #include <QDBusConnection>
@@ -113,7 +117,67 @@ void FlameshotDaemon::start()
         // Tray icon needs FlameshotDaemon::instance() to be non-null
         m_instance->initTrayIcon();
         qApp->setQuitOnLastWindowClosed(false);
+        // flameshot-ocr: daemon 启动即确保 F1 直调脚本就位（自愈式：
+        // 每次登录 daemon 自启后加载 kwin 脚本，把 F1 从「_launch 启动
+        // 新进程」抢注为 callDBus 直调 daemon —— 后者不产生启动反馈）
+        m_instance->ensureF1ShortcutScript();
     }
+}
+
+// flameshot-ocr: kwin 脚本把 F1 注册为 DBus 直调。kglobalaccel 的
+// setShortcut 语义是「新注册者抢走冲突键」，因此加载脚本即从服务的
+// _launch 动作手里接管 F1；_launch 变为无键，旧路径（产生启动反馈
+// 图标的进程启动）不再被触发。
+void FlameshotDaemon::ensureF1ShortcutScript()
+{
+    const QString scriptDir =
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+      QStringLiteral("/flameshot-ocr");
+    QDir().mkpath(scriptDir);
+    const QString scriptPath = scriptDir + QStringLiteral("/f1-dbus-launch.js");
+    QFile scriptFile(scriptPath);
+    if (!scriptFile.exists()) {
+        if (scriptFile.open(QIODevice::WriteOnly)) {
+            scriptFile.write(
+              "// flameshot-ocr: F1 -> DBus direct call (no process launch,\n"
+              "// no xdg-activation token, no launch-feedback cursor icon)\n"
+              "registerShortcut(\"FlameshotGuiF1\", "
+              "\"Flameshot: Capture (F1)\", \"F1\", function() {\n"
+              "    callDBus(\"org.flameshot.Flameshot\", \"/\", "
+              "\"org.flameshot.Flameshot\", \"captureGui\");\n"
+              "});\n");
+        }
+    }
+    if (!scriptFile.exists()) {
+        return;
+    }
+    QProcess isLoaded;
+    isLoaded.start(
+      QStringLiteral("qdbus6"),
+      { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+        QStringLiteral("org.kde.kwin.Scripting.isScriptLoaded"), scriptPath });
+    isLoaded.waitForFinished(3000);
+    if (QString::fromLocal8Bit(isLoaded.readAllStandardOutput()).trimmed() ==
+        QStringLiteral("true")) {
+        return;
+    }
+    QProcess load;
+    load.start(QStringLiteral("qdbus6"),
+               { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+                 QStringLiteral("org.kde.kwin.Scripting.loadScript"),
+                 scriptPath });
+    load.waitForFinished(3000);
+    bool ok = false;
+    const int scriptId =
+      QString::fromLocal8Bit(load.readAllStandardOutput()).trimmed().toInt(&ok);
+    if (!ok) {
+        return;
+    }
+    QProcess::startDetached(
+      QStringLiteral("qdbus6"),
+      { QStringLiteral("org.kde.KWin"),
+        QStringLiteral("/Scripting/Script%1").arg(scriptId),
+        QStringLiteral("org.kde.kwin.Script.run") });
 }
 
 void FlameshotDaemon::createPin(const QPixmap& capture, QRect geometry)

@@ -72,6 +72,9 @@ private:
     void initTrayIcon();
     void enableTrayIcon(bool enable);
 
+    // flameshot-ocr: 自愈加载 kwin 脚本（F1 → DBus 直调 captureGui）
+    void ensureF1ShortcutScript();
+
 #if !(defined(Q_OS_MACOS) || defined(Q_OS_WIN))
     static QDBusMessage createMethodCall(const QString& method);
     static void checkDBusConnection(const QDBusConnection& connection);
