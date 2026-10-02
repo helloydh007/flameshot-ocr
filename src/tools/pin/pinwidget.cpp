@@ -171,12 +171,22 @@ void PinWidget::buildToolBar()
                   PinAnnotator::Marker);
     addToolButton(QStringLiteral("arrow-bottom-left"),
                   OcrPanel::tr2("箭头", "Arrow"), PinAnnotator::Arrow);
-    addToolButton(QStringLiteral("format_underlined"),
+    addToolButton(QStringLiteral("rectangle"),
                   OcrPanel::tr2("矩形", "Rectangle"), PinAnnotator::Rectangle);
     addToolButton(QStringLiteral("circle-outline"),
                   OcrPanel::tr2("椭圆", "Ellipse"), PinAnnotator::Ellipse);
-    addToolButton(QStringLiteral("format_strikethrough"),
+    addToolButton(QStringLiteral("line"),
                   OcrPanel::tr2("直线", "Line"), PinAnnotator::Line);
+    addToolButton(QStringLiteral("circlecount-outline"),
+                  OcrPanel::tr2("序号标记（递增编号）",
+                                "Numbered marker (increments)"),
+                  PinAnnotator::Number);
+    addToolButton(QStringLiteral("text"),
+                  OcrPanel::tr2("添加文字", "Add text"), PinAnnotator::Text);
+    addToolButton(QStringLiteral("eraser"),
+                  OcrPanel::tr2("橡皮擦（点击标注删除）",
+                                "Eraser (click an annotation to remove it)"),
+                  PinAnnotator::Eraser);
 
     // 颜色下拉
     m_colorButton = new QToolButton(m_toolBarRow);
@@ -216,7 +226,9 @@ void PinWidget::buildToolBar()
 
     // 粗细下拉
     auto* widthButton = new QToolButton(m_toolBarRow);
-    widthButton->setText(QStringLiteral("粗"));
+    widthButton->setIcon(QIcon(PathInfo::whiteIconPath() +
+                               QStringLiteral("minus.svg")));
+    widthButton->setIconSize(QSize(18, 18));
     widthButton->setToolTip(OcrPanel::tr2("粗细", "Width"));
     widthButton->setCursor(Qt::PointingHandCursor);
     widthButton->setPopupMode(QToolButton::InstantPopup);
@@ -236,20 +248,24 @@ void PinWidget::buildToolBar()
     widthButton->setMenu(widthMenu);
     layout->addWidget(widthButton);
 
-    auto addActionButton = [&](const QString& label, const QString& tip,
+    auto addActionButton = [&](const QString& icon, const QString& tip,
                                std::function<void()> fn) {
         auto* button = new QToolButton(m_toolBarRow);
-        button->setText(label);
+        button->setIcon(QIcon(PathInfo::whiteIconPath() + icon));
+        button->setIconSize(QSize(18, 18));
         button->setToolTip(tip);
         button->setAutoRaise(true);
         button->setCursor(Qt::PointingHandCursor);
         connect(button, &QToolButton::clicked, this, [fn]() { fn(); });
         layout->addWidget(button);
     };
-    addActionButton(QStringLiteral("↶"),
+    addActionButton(QStringLiteral("undo-variant"),
                     OcrPanel::tr2("撤销标注 (Ctrl+Z)", "Undo (Ctrl+Z)"),
                     [this]() { m_annotator->undo(); });
-    addActionButton(QStringLiteral("清"),
+    addActionButton(QStringLiteral("redo-variant"),
+                    OcrPanel::tr2("重做标注", "Redo"),
+                    [this]() { m_annotator->redo(); });
+    addActionButton(QStringLiteral("delete"),
                     OcrPanel::tr2("清空标注", "Clear annotations"),
                     [this]() { m_annotator->clearShapes(); });
 
@@ -258,18 +274,18 @@ void PinWidget::buildToolBar()
     separator->setStyleSheet(QStringLiteral("color: #3f3f46;"));
     layout->addWidget(separator);
 
-    addActionButton(QStringLiteral("OCR"),
+    addActionButton(QStringLiteral("ocr"),
                     OcrPanel::tr2("文字识别", "OCR"),
                     [this]() { runOcr(); });
-    addActionButton(QStringLiteral("复"),
+    addActionButton(QStringLiteral("content-copy"),
                     OcrPanel::tr2("复制到剪贴板（含标注）",
                                   "Copy to clipboard (with annotations)"),
                     [this]() { copyToClipboard(); });
-    addActionButton(QStringLiteral("存"),
+    addActionButton(QStringLiteral("content-save"),
                     OcrPanel::tr2("保存到文件（含标注）",
                                   "Save to file (with annotations)"),
                     [this]() { saveToFile(); });
-    addActionButton(QStringLiteral("✕"), OcrPanel::tr2("关闭", "Close"),
+    addActionButton(QStringLiteral("close"), OcrPanel::tr2("关闭", "Close"),
                     [this]() { closePin(); });
 
     m_toolBarRow->setStyleSheet(
@@ -459,6 +475,8 @@ void PinWidget::resizeEvent(QResizeEvent*)
 
 QPixmap PinWidget::compositedPixmap() const
 {
+    // 复制/保存前提交正在输入的文字
+    const_cast<PinAnnotator*>(m_annotator)->commitPendingText();
     QPixmap out = m_pixmap;
     if (m_annotator && m_annotator->hasShapes()) {
         QImage overlay = m_annotator->renderToImage(m_pixmap.size());
@@ -533,78 +551,6 @@ void PinWidget::showContextMenu(const QPoint& pos)
         positionAnnotator();
     });
     contextMenu.addSeparator();
-
-    // flameshot-ocr: 标注工具子菜单
-    QMenu* annotateMenu =
-      contextMenu.addMenu(OcrPanel::tr2("标注", "Annotate"));
-    auto* toolGroup = new QActionGroup(annotateMenu);
-    auto addToolAction = [&](const QString& name, PinAnnotator::Tool tool) {
-        QAction* action = annotateMenu->addAction(name);
-        action->setCheckable(true);
-        action->setChecked(m_annotator->tool() == tool);
-        toolGroup->addAction(action);
-        connect(action, &QAction::triggered, this,
-                [this, tool]() { m_annotator->setTool(tool); });
-    };
-    addToolAction(OcrPanel::tr2("移动（不标注）", "Move (no drawing)"),
-                  PinAnnotator::None);
-    addToolAction(OcrPanel::tr2("画笔", "Pen"), PinAnnotator::Pencil);
-    addToolAction(OcrPanel::tr2("荧光笔", "Marker"), PinAnnotator::Marker);
-    addToolAction(OcrPanel::tr2("箭头", "Arrow"), PinAnnotator::Arrow);
-    addToolAction(OcrPanel::tr2("矩形", "Rectangle"), PinAnnotator::Rectangle);
-    addToolAction(OcrPanel::tr2("椭圆", "Ellipse"), PinAnnotator::Ellipse);
-    addToolAction(OcrPanel::tr2("直线", "Line"), PinAnnotator::Line);
-
-    QMenu* colorMenu = annotateMenu->addMenu(OcrPanel::tr2("颜色", "Color"));
-    const QVector<QPair<QString, QColor>> colors = {
-        { OcrPanel::tr2("红色", "Red"), QColor(255, 59, 48) },
-        { OcrPanel::tr2("黄色", "Yellow"), QColor(255, 204, 0) },
-        { OcrPanel::tr2("绿色", "Green"), QColor(52, 199, 89) },
-        { OcrPanel::tr2("青色", "Cyan"), QColor(0, 199, 190) },
-        { OcrPanel::tr2("蓝色", "Blue"), QColor(0, 122, 255) },
-        { OcrPanel::tr2("紫色", "Purple"), QColor(175, 82, 222) },
-        { OcrPanel::tr2("黑色", "Black"), QColor(17, 17, 17) },
-        { OcrPanel::tr2("白色", "White"), QColor(255, 255, 255) },
-    };
-    auto* colorGroup = new QActionGroup(colorMenu);
-    for (const auto& entry : colors) {
-        QPixmap swatch(14, 14);
-        swatch.fill(entry.second);
-        QAction* action = colorMenu->addAction(QIcon(swatch), entry.first);
-        action->setCheckable(true);
-        action->setChecked(m_annotator->color() == entry.second);
-        colorGroup->addAction(action);
-        connect(action, &QAction::triggered, this,
-                [this, entry]() { m_annotator->setColor(entry.second); });
-    }
-
-    QMenu* widthMenu = annotateMenu->addMenu(OcrPanel::tr2("粗细", "Width"));
-    const QVector<QPair<QString, int>> widths = {
-        { OcrPanel::tr2("细", "Thin"), 2 },
-        { OcrPanel::tr2("中", "Medium"), 4 },
-        { OcrPanel::tr2("粗", "Thick"), 8 },
-    };
-    auto* widthGroup = new QActionGroup(widthMenu);
-    for (const auto& entry : widths) {
-        QAction* action = widthMenu->addAction(entry.first);
-        action->setCheckable(true);
-        action->setChecked(m_annotator->width() == entry.second);
-        widthGroup->addAction(action);
-        connect(action, &QAction::triggered, this,
-                [this, entry]() { m_annotator->setWidth(entry.second); });
-    }
-
-    annotateMenu->addSeparator();
-    QAction* undoAct = annotateMenu->addAction(
-      OcrPanel::tr2("撤销标注 (Ctrl+Z)", "Undo annotation (Ctrl+Z)"));
-    undoAct->setEnabled(m_annotator->hasShapes());
-    connect(undoAct, &QAction::triggered, this,
-            [this]() { m_annotator->undo(); });
-    QAction* clearAct = annotateMenu->addAction(
-      OcrPanel::tr2("清空标注", "Clear annotations"));
-    clearAct->setEnabled(m_annotator->hasShapes());
-    connect(clearAct, &QAction::triggered, this,
-            [this]() { m_annotator->clearShapes(); });
 
     QAction copyToClipboardAction(tr("Copy to clipboard"), this);
     connect(&copyToClipboardAction,

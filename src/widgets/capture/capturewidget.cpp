@@ -1056,6 +1056,60 @@ void CaptureWidget::runSelfTest()
             QApplication::processEvents(QEventLoop::AllEvents, 50);
             qWarning() << "SELFTEST 10 pin-undo:"
                        << ((!annotator->hasShapes()) ? "PASS" : "FAIL");
+
+            // 12-15: 钉图新工具 —— 文字 / 序号 / 橡皮擦 / 重做
+            fflush(stderr);
+
+            // 12: 文字工具 —— 放置 + 键入 + 回车提交
+            annotator->setTool(PinAnnotator::Text);
+            annoPress(QPoint(80, 80));
+            const std::initializer_list<std::pair<Qt::Key, QString>> keys = {
+                { Qt::Key_H, QStringLiteral("H") },
+                { Qt::Key_I, QStringLiteral("i") },
+            };
+            for (const auto& k : keys) {
+                QKeyEvent keyEv(QEvent::KeyPress, k.first, Qt::NoModifier,
+                                k.second);
+                QApplication::sendEvent(annotator, &keyEv);
+            }
+            QKeyEvent enterEv(QEvent::KeyPress, Qt::Key_Return,
+                              Qt::NoModifier);
+            QApplication::sendEvent(annotator, &enterEv);
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            const int afterText = annotator->shapeCount();
+            qWarning() << "SELFTEST 12 pin-text:" << (afterText >= 1 ? "PASS" : "FAIL")
+                       << "shapes:" << afterText;
+
+            // 13: 序号工具 —— 点击放置递增编号
+            annotator->setTool(PinAnnotator::Number);
+            annoPress(QPoint(300, 80));
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            const int afterNumber = annotator->shapeCount();
+            qWarning() << "SELFTEST 13 pin-number:"
+                       << (afterNumber == afterText + 1 ? "PASS" : "FAIL")
+                       << afterText << "->" << afterNumber;
+
+            // 14: 橡皮擦 —— 点击文字包围盒删除
+            annotator->setTool(PinAnnotator::Eraser);
+            annoPress(QPoint(90, 95));
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            const int afterErase = annotator->shapeCount();
+            qWarning() << "SELFTEST 14 pin-eraser:"
+                       << (afterErase == afterNumber - 1 ? "PASS" : "FAIL")
+                       << afterNumber << "->" << afterErase;
+
+            // 15: 重做 —— 撤销再重做，形状数恢复
+            annotator->undo();
+            const int afterUndo = annotator->shapeCount();
+            annotator->redo();
+            const int afterRedo = annotator->shapeCount();
+            qWarning() << "SELFTEST 15 pin-redo:"
+                       << (afterUndo == afterErase - 1 &&
+                                 afterRedo == afterUndo + 1
+                             ? "PASS"
+                             : "FAIL")
+                       << afterErase << "-> undo" << afterUndo << "-> redo"
+                       << afterRedo;
             fflush(stderr);
         }
 
