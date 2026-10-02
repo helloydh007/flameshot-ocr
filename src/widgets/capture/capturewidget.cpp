@@ -401,7 +401,16 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
                 emit m_selection->geometrySettled();
                 m_buttonHandler->show();
                 updateSelectionState();
-                m_context.selection = sel;
+                // 与真实拖选一致：m_context.selection 存设备像素
+                // （updateSelectionState 内部经 extendedRect 已设置，
+                //  这里显式再设一次以防未来顺序变化）
+                const qreal dpr =
+                  m_context.origScreenshot.devicePixelRatio();
+                m_context.selection = QRect(
+                  static_cast<int>(sel.left() * dpr),
+                  static_cast<int>(sel.top() * dpr),
+                  static_cast<int>(sel.width() * dpr),
+                  static_cast<int>(sel.height() * dpr));
             }
             runOcr();
         });
@@ -2961,29 +2970,42 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
 // m_ocrGeneration 世代计数器作废；QProcess/临时文件在任务结束后立即回收。
 void CaptureWidget::runOcr()
 {
-    QRect sel = m_context.selection.isNull() ? rect() : m_context.selection;
-    sel = sel.normalized().intersected(rect());
-    if (sel.isEmpty()) {
+    // 坐标语义与复制/固定（pin）路径完全一致：m_context.selection 本身
+    // 就是设备像素（extendedRect 已乘过 dpr），origScreenshot 也是设备
+    // 像素图——直接按设备像素裁剪即可，不再做任何换算。
+    // 【实测修复】旧实现把设备像素选区再乘一次 dpr 并与逻辑 rect()
+    // 求交：真实拖选的裁剪区会右下偏移并放大 dpr 倍（125% 缩放屏上
+    // 偏移 25%），导致"识别内容与所选内容不一致"；固定后识别正常
+    // 是因为 pin 走 selectedScreenshotArea() 的正确坐标。
+    const qreal dpr = m_context.origScreenshot.devicePixelRatio();
+    QRect deviceSel = m_context.selection;
+    QRect logicalSel; // 面板是子控件，定位用逻辑坐标
+    if (deviceSel.isNull()) {
+        deviceSel = m_context.origScreenshot.rect();
+        logicalSel = rect();
+    } else {
+        deviceSel = deviceSel.normalized();
+        logicalSel = QRect(QPoint(qRound(deviceSel.left() / dpr),
+                                  qRound(deviceSel.top() / dpr)),
+                           QPoint(qRound(deviceSel.right() / dpr),
+                                  qRound(deviceSel.bottom() / dpr)));
+    }
+    if (deviceSel.isEmpty()) {
         return;
     }
 
     if (!m_ocrPanel) {
         m_ocrPanel = new OcrPanel(this);
     }
-    m_ocrPanel->showLoading(sel);
+    m_ocrPanel->showLoading(logicalSel);
 
-    const qreal dpr = m_context.origScreenshot.devicePixelRatio();
-    // 审查修复：分数缩放下用 qRound 映射设备坐标避免亚像素偏差；并且先
-    // 裁剪 QPixmap 再 toImage，避免整屏像素的深拷贝（4K 屏可省数十 MB）。
-    QRect deviceRect(
-      QPoint(qRound(sel.left() * dpr), qRound(sel.top() * dpr)),
-      QPoint(qRound(sel.right() * dpr), qRound(sel.bottom() * dpr)));
-    deviceRect = deviceRect.intersected(m_context.origScreenshot.rect());
-    if (deviceRect.isEmpty()) {
+    deviceSel = deviceSel.intersected(m_context.origScreenshot.rect());
+    if (deviceSel.isEmpty()) {
         m_ocrPanel->showFailure();
         return;
     }
-    const QImage crop = m_context.origScreenshot.copy(deviceRect).toImage();
+    // 先裁 QPixmap 再 toImage，避免整屏像素深拷贝（4K 屏省数十 MB）
+    const QImage crop = m_context.origScreenshot.copy(deviceSel).toImage();
 
     const quint64 generation = ++m_ocrGeneration;
     // 审查报告 §2.2：先 cancel 旧任务（终止旧引擎进程），保证最多一个
