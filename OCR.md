@@ -161,3 +161,13 @@ BusyCursor=false → `m_type = NoFeedback`（startupfeedback.cpp:153），
 ## 许可
 
 与上游一致：GPL-3.0-or-later。
+
+## 修复：注销重登后托盘/图标失效（2026-10-02）
+
+重登后 `app-Flameshot@autostart.service` 失败退出（exit 2）：历史遗留的
+`/usr/local/bin/flameshot` 包装脚本会无条件追加 `gui` 参数，把登录自启的
+daemon 模式劫持成截图 GUI 模式并立即失败。修复：删除该包装脚本（其兼容
+使命已被 kwin 脚本方案取代），`~/.config/autostart/Flameshot.desktop` 的
+Exec 改为绝对路径 `/usr/bin/flameshot`。同轮验证：重登后
+`startupfeedback` 效果 `type: 0`（NoFeedback）——齿轮渲染器已随
+`klaunchrc BusyCursor=false` 生效关闭。
