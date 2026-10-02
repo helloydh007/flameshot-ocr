@@ -153,6 +153,17 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     OPTION("resizeSensitivity"           ,BoundedInt         ( 1, 100, 50   )),
     // flameshot-ocr: 钉图快捷工具条默认隐藏（可在钉图右键菜单中开启）
     OPTION("pinShowToolbar"              ,Bool               ( false         )),
+    // flameshot-ocr: 全局启动快捷键（kwin 脚本注册；F1 或 Windows 风格
+    // Print 等）。值为 QKeySequence::toString 可解析串；与其它全局快捷键
+    // 冲突时 kglobalaccel 会拒绝注册，需自行避开
+    OPTION("launchShortcut"              ,String             ( "F1"          )),
+    // flameshot-ocr: 界面主题 system/light/dark（system 跟随系统配色）
+    OPTION("uiTheme"                     ,String             ( "system"      )),
+    // flameshot-ocr: 工具条图标基准尺寸（px，16-48）
+    OPTION("toolbarIconSize"             ,BoundedInt         ( 16, 48, 24   )),
+    // flameshot-ocr: OCR 结果面板相对选区的位置
+    // auto/left/right/top/bottom（auto = 先右后左自动翻转）
+    OPTION("ocrPanelPosition"            ,String             ( "auto"        )),
 };
 
 static QMap<QString, QSharedPointer<KeySequence>> recognizedShortcuts = {
@@ -313,9 +324,22 @@ void ConfigHandler::setStartupLaunch(const bool start)
     QFile file(path + "Flameshot.desktop");
     if (start) {
         if (file.open(QIODevice::WriteOnly)) {
-            QByteArray data("[Desktop Entry]\nName=flameshot\nIcon=flameshot"
-                            "\nExec=flameshot\nTerminal=false\nType=Application"
-                            "\nX-GNOME-Autostart-enabled=true\n");
+            // flameshot-ocr: AppImage 下不能写通用 Exec=flameshot（PATH 里
+            // 未必有，且写死会落到 deb 版）；$APPIMAGE 指向 AppImage 文件
+            // 本体，重启后路径仍有效
+            QString execLine = QStringLiteral("Exec=flameshot");
+            const QString appImage =
+              qEnvironmentVariable("APPIMAGE");
+            if (!appImage.isEmpty()) {
+                execLine = QStringLiteral("Exec=\"%1\"").arg(appImage);
+            }
+            QByteArray data =
+              QStringLiteral("[Desktop Entry]\nName=flameshot\n"
+                             "Icon=flameshot\n%1\nTerminal=false\n"
+                             "Type=Application\n"
+                             "X-GNOME-Autostart-enabled=true\n")
+                .arg(execLine)
+                .toUtf8();
             file.write(data);
         }
     } else {

@@ -4,6 +4,7 @@
 #include "pretoolbar.h"
 #include "src/utils/confighandler.h"
 #include "src/utils/pathinfo.h"
+#include "src/utils/uitheme.h"
 #include "src/widgets/capture/ocrpanel.h"
 #include <QAction>
 #include <QActionGroup>
@@ -30,7 +31,7 @@ QToolButton* flatButton(QWidget* parent,
     button->setIcon(QIcon(iconFile(icon)));
     button->setToolTip(tip);
     button->setAutoRaise(true);
-    button->setIconSize(QSize(20, 20));
+    button->setIconSize(QSize(UiTheme::iconSize() * 5 / 6, UiTheme::iconSize() * 5 / 6));
     button->setCursor(Qt::PointingHandCursor);
     return button;
 }
@@ -95,7 +96,7 @@ PreToolbar::PreToolbar(QWidget* parent)
 
     auto* separator1 = new QFrame(this);
     separator1->setFrameShape(QFrame::VLine);
-    separator1->setStyleSheet(QStringLiteral("color: #3f3f46;"));
+    separator1->setStyleSheet(QStringLiteral("color: %1;").arg(UiTheme::panelBorder().name()));
     layout->addWidget(separator1);
 
     // 取色：点击进入取色模式（按所选格式自动复制）；旁边的 ▾ 切换格式
@@ -170,7 +171,7 @@ PreToolbar::PreToolbar(QWidget* parent)
 
     auto* separator2 = new QFrame(this);
     separator2->setFrameShape(QFrame::VLine);
-    separator2->setStyleSheet(QStringLiteral("color: #3f3f46;"));
+    separator2->setStyleSheet(QStringLiteral("color: %1;").arg(UiTheme::panelBorder().name()));
     layout->addWidget(separator2);
 
     // 撤销 / 重做 / 橡皮擦
@@ -258,7 +259,7 @@ void PreToolbar::setDrawColorPreview(const QColor& color)
     QPixmap swatch(18, 18);
     swatch.fill(color);
     m_colorBtn->setIcon(QIcon(swatch));
-    m_colorBtn->setIconSize(QSize(18, 18));
+    m_colorBtn->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
 }
 
 void PreToolbar::showEvent(QShowEvent* event)
@@ -287,7 +288,9 @@ void PreToolbar::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(QColor(63, 63, 70), 1));
-    painter.setBrush(QColor(26, 26, 31, 245));
+    painter.setPen(QPen(UiTheme::panelBorder(), 1));
+    QColor bg = UiTheme::panelBg();
+    bg.setAlpha(245);
+    painter.setBrush(bg);
     painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 10, 10);
 }

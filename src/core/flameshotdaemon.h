@@ -37,6 +37,11 @@ public:
       const QString& title = QStringLiteral("Flameshot Info"),
       const int timeout = 5000);
 
+    // flameshot-ocr: 设置界面更改启动快捷键后调用——按 launchShortcut
+    // 配置重新生成并重载 kwin 脚本（非 KDE 环境内部自动跳过）
+    static void refreshLaunchShortcut();
+    static void ensureF1ShortcutScript();
+
 #if defined(USE_KDSINGLEAPPLICATION) &&                                        \
   (defined(Q_OS_MACOS) || defined(Q_OS_WIN))
 public slots:
@@ -71,9 +76,6 @@ private:
 
     void initTrayIcon();
     void enableTrayIcon(bool enable);
-
-    // flameshot-ocr: 自愈加载 kwin 脚本（F1 → DBus 直调 captureGui）
-    void ensureF1ShortcutScript();
 
 #if !(defined(Q_OS_MACOS) || defined(Q_OS_WIN))
     static QDBusMessage createMethodCall(const QString& method);

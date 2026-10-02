@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2017-2019 Alejandro Sirgo Rica & Contributors
 
 #include "globalvalues.h"
+#include "src/utils/confighandler.h"
 #include <QApplication>
 #include <QFontMetrics>
 
@@ -11,6 +12,12 @@
 
 int GlobalValues::buttonBaseSize()
 {
+    // flameshot-ocr: toolbarIconSize 配置优先（16-48）；未定制时保持
+    // 上游的字体联动尺寸
+    const int configured = ConfigHandler().toolbarIconSize();
+    if (configured >= 16 && configured <= 48) {
+        return configured;
+    }
     return QFontMetrics(qApp->font()).lineSpacing() * 2.2;
 }
 

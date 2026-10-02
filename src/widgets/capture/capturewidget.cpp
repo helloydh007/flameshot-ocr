@@ -17,6 +17,7 @@
 #include "src/tools/pin/pinwidget.h"
 #include "src/config/cacheutils.h"
 #include "src/core/flameshot.h"
+#include "src/core/flameshotdaemon.h"
 #include "src/core/qguiappcurrentscreen.h"
 #include "src/utils/ocrhelper.h"
 #include "src/utils/screengrabber.h"
@@ -55,8 +56,10 @@
 #include <cstdio>
 #include <functional>
 #include <memory>
+#include <QFile>
 #include <QImage>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QWindow>
 #include <draggablewidgetmaker.h>
 
@@ -1403,6 +1406,36 @@ void CaptureWidget::runSelfTest()
                                 pre.format() == QImage::Format_RGB888;
                 qWarning() << "SELFTEST 26 ocr-preprocess:"
                            << (ok ? "PASS" : "FAIL") << pre.size();
+            }
+
+            // 29: 启动快捷键可配置 —— 改配置后 kwin 脚本按新键值重新生成
+            {
+                ConfigHandler().setLaunchShortcut(
+                  QStringLiteral("Print"));
+                FlameshotDaemon::refreshLaunchShortcut();
+                const QString scriptPath =
+                  QStandardPaths::writableLocation(
+                    QStandardPaths::GenericDataLocation) +
+                  QStringLiteral("/flameshot-ocr/f1-dbus-launch.js");
+                QFile f(scriptPath);
+                const QString body =
+                  f.open(QIODevice::ReadOnly) ? f.readAll() : QString();
+                f.close();
+                const bool printOk = body.contains(
+                  QStringLiteral(R"("Print")"));
+                // 还原 F1，保证测试不留副作用
+                ConfigHandler().setLaunchShortcut(QStringLiteral("F1"));
+                FlameshotDaemon::refreshLaunchShortcut();
+                const QString body2 =
+                  f.open(QIODevice::ReadOnly) ? f.readAll() : QString();
+                f.close();
+                const bool f1Ok =
+                  body2.contains(QStringLiteral(R"("F1")"));
+                qWarning() << "SELFTEST 29 launch-shortcut-config:"
+                           << (printOk && f1Ok ? "PASS" : "FAIL")
+                           << "print:" << printOk << "f1:" << f1Ok
+                           << "body2Tail:"
+                           << body2.right(160).replace('\n', '|');
             }
 
             // 清理测试钉图：无父控件的 widget 不随进程退出析构，

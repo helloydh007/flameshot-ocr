@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
+#include <QKeySequence>
 #include <QPixmap>
 #include <QProcess>
 #include <QRect>
@@ -117,22 +118,28 @@ void FlameshotDaemon::start()
         // Tray icon needs FlameshotDaemon::instance() to be non-null
         m_instance->initTrayIcon();
         qApp->setQuitOnLastWindowClosed(false);
-        // flameshot-ocr: daemon 启动即确保 F1 直调脚本就位（自愈式：
-        // 每次登录 daemon 自启后加载 kwin 脚本，把 F1 从「_launch 启动
-        // 新进程」抢注为 callDBus 直调 daemon —— 后者不产生启动反馈）
-        m_instance->ensureF1ShortcutScript();
+        // flameshot-ocr: daemon 启动即确保启动快捷键脚本就位（自愈式：
+        // 每次登录 daemon 自启后按 launchShortcut 配置加载 kwin 脚本，
+        // 把按键注册为 callDBus 直调 daemon —— 后者不产生启动反馈）
+        ensureF1ShortcutScript();
     }
 }
 
-// flameshot-ocr: kwin 脚本把 F1 注册为 DBus 直调。kglobalaccel 的
-// setShortcut 语义是「新注册者抢走冲突键」，因此加载脚本即从服务的
-// _launch 动作手里接管 F1；_launch 变为无键，旧路径（产生启动反馈
-// 图标的进程启动）不再被触发。
+// flameshot-ocr: 设置界面改键后即时生效
+void FlameshotDaemon::refreshLaunchShortcut()
+{
+    ensureF1ShortcutScript();
+}
+
+// flameshot-ocr: kwin 脚本把全局快捷键（launchShortcut 配置，默认 F1）
+// 注册为 DBus 直调。kglobalaccel 对冲突键是「跳过」而非「抢夺」——若
+// 配置的键已被 Spectacle 等占用，注册会被静默忽略，需自行避开冲突。
+// 脚本内容随配置生成；键值变化时先卸载旧脚本再加载，保证即时生效。
 void FlameshotDaemon::ensureF1ShortcutScript()
 {
     // GNOME/其它桌面无 qdbus6（也无 kwin）：立即跳过。旧实现里
     // QProcess 对不存在的二进制要等 waitForFinished 超时，daemon 启动
-    // 白白卡顿；F1 在这些桌面经系统快捷键设置指向 flameshot gui 即可。
+    // 白白卡顿；快捷键在这些桌面经系统快捷键设置指向 flameshot gui 即可。
     if (QStandardPaths::findExecutable(QStringLiteral("qdbus6"))
           .isEmpty()) {
         return;
@@ -142,31 +149,61 @@ void FlameshotDaemon::ensureF1ShortcutScript()
       QStringLiteral("/flameshot-ocr");
     QDir().mkpath(scriptDir);
     const QString scriptPath = scriptDir + QStringLiteral("/f1-dbus-launch.js");
+    // 校验配置可解析，非法时回落 F1
+    QString key = ConfigHandler().launchShortcut();
+    if (QKeySequence(key).isEmpty()) {
+        key = QStringLiteral("F1");
+    }
     QFile scriptFile(scriptPath);
-    if (!scriptFile.exists()) {
-        if (scriptFile.open(QIODevice::WriteOnly)) {
-            scriptFile.write(
-              "// flameshot-ocr: F1 -> DBus direct call (no process launch,\n"
-              "// no xdg-activation token, no launch-feedback cursor icon)\n"
-              "registerShortcut(\"FlameshotGuiF1\", "
-              "\"Flameshot: Capture (F1)\", \"F1\", function() {\n"
-              "    callDBus(\"org.flameshot.Flameshot\", \"/\", "
-              "\"org.flameshot.Flameshot\", \"captureGui\");\n"
-              "});\n");
+    const QByteArray wanted =
+      QStringLiteral(
+        "// flameshot-ocr: global launch shortcut -> DBus direct call (no\n"
+        "// process launch, no xdg-activation token, no launch-feedback\n"
+        "// cursor icon). Generated from the launchShortcut setting.\n"
+        "registerShortcut(\"FlameshotGuiF1\", \"Flameshot: Capture\", "
+        "\"%1\", function() {\n"
+        "    callDBus(\"org.flameshot.Flameshot\", \"/\", "
+        "\"org.flameshot.Flameshot\", \"captureGui\");\n"
+        "});\n")
+        .arg(key)
+        .toUtf8();
+    // 内容与配置不一致（首次或改键）时重写并标记需要重载
+    bool needReload = true;
+    if (scriptFile.exists() && scriptFile.open(QIODevice::ReadOnly)) {
+        needReload = scriptFile.readAll() != wanted;
+        scriptFile.close();
+    }
+    if (needReload) {
+        if (scriptFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            scriptFile.write(wanted);
+        } else {
+            return;
         }
     }
     if (!scriptFile.exists()) {
         return;
     }
-    QProcess isLoaded;
-    isLoaded.start(
-      QStringLiteral("qdbus6"),
-      { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
-        QStringLiteral("org.kde.kwin.Scripting.isScriptLoaded"), scriptPath });
-    isLoaded.waitForFinished(3000);
-    if (QString::fromLocal8Bit(isLoaded.readAllStandardOutput()).trimmed() ==
-        QStringLiteral("true")) {
-        return;
+    // 改键后旧注册仍在：先卸载旧脚本，再重新加载运行
+    if (needReload) {
+        QProcess unload;
+        unload.start(QStringLiteral("qdbus6"),
+                     { QStringLiteral("org.kde.KWin"),
+                       QStringLiteral("/Scripting"),
+                       QStringLiteral("org.kde.kwin.Scripting.unloadScript"),
+                       scriptPath });
+        unload.waitForFinished(3000);
+    } else {
+        QProcess isLoaded;
+        isLoaded.start(
+          QStringLiteral("qdbus6"),
+          { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+            QStringLiteral("org.kde.kwin.Scripting.isScriptLoaded"),
+            scriptPath });
+        isLoaded.waitForFinished(3000);
+        if (QString::fromLocal8Bit(isLoaded.readAllStandardOutput())
+              .trimmed() == QStringLiteral("true")) {
+            return;
+        }
     }
     QProcess load;
     load.start(QStringLiteral("qdbus6"),

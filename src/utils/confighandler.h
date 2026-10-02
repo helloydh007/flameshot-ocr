@@ -143,6 +143,11 @@ public:
     CONFIG_GETTER_SETTER(shapeFill, setShapeFill, bool)
     CONFIG_GETTER_SETTER(resizeSensitivity, setResizeSensitivity, int)
     CONFIG_GETTER_SETTER(pinShowToolbar, setPinShowToolbar, bool)
+    // flameshot-ocr: 启动快捷键 / 主题 / 图标尺寸 / OCR 面板位置
+    CONFIG_GETTER_SETTER(launchShortcut, setLaunchShortcut, QString)
+    CONFIG_GETTER_SETTER(uiTheme, setUiTheme, QString)
+    CONFIG_GETTER_SETTER(toolbarIconSize, setToolbarIconSize, int)
+    CONFIG_GETTER_SETTER(ocrPanelPosition, setOcrPanelPosition, QString)
     CONFIG_GETTER_SETTER(showSelectionGeometryHideTime,
                          showSelectionGeometryHideTime,
                          int)

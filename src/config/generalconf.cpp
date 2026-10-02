@@ -2,6 +2,10 @@
 // SPDX-FileCopyrightText: 2017-2019 Alejandro Sirgo Rica & Contributors
 #include "generalconf.h"
 #include "src/core/flameshot.h"
+#include "src/core/flameshotdaemon.h"
+#include "src/utils/uitheme.h"
+#include "src/widgets/capture/ocrpanel.h"
+#include <QKeySequenceEdit>
 #include "src/utils/confighandler.h"
 #include <QCheckBox>
 #include <QComboBox>
@@ -33,6 +37,11 @@ GeneralConf::GeneralConf(QWidget* parent)
     initScrollArea();
 
     initAutostart();
+    // flameshot-ocr: 启动快捷键 / 主题 / 图标大小 / OCR 面板位置
+    initLaunchShortcut();
+    initUiTheme();
+    initToolbarIconSize();
+    initOcrPanelPosition();
 #if !defined(Q_OS_WIN)
     initAutoCloseIdleDaemon();
 #endif
@@ -185,6 +194,154 @@ void GeneralConf::autoCloseIdleDaemonChanged(bool checked)
 void GeneralConf::autostartChanged(bool checked)
 {
     ConfigHandler().setStartupLaunch(checked);
+}
+
+// flameshot-ocr: 启动快捷键（kwin 脚本注册，改后即时生效；非 KDE 环境
+// 需在系统快捷键设置里手动指向 flameshot gui）
+void GeneralConf::initLaunchShortcut()
+{
+    auto* row = new QWidget(this);
+    auto* lay = new QHBoxLayout(row);
+    lay->setContentsMargins(0, 0, 0, 0);
+    auto* label = new QLabel(OcrPanel::tr2("启动截图快捷键", "Launch shortcut"), row);
+    m_launchShortcutEdit = new QKeySequenceEdit(row);
+    ConfigHandler config;
+    m_launchShortcutEdit->setKeySequence(
+      QKeySequence(config.launchShortcut()));
+    m_launchShortcutEdit->setToolTip(
+      OcrPanel::tr2("全局唤出截图的快捷键（KDE 即改即生效；其它桌面请在系统"
+                    "快捷键设置里绑定 flameshot gui）。与已有全局快捷键冲突"
+                    "时不会生效。",
+                    "Global shortcut to summon the capture UI (applies "
+                    "immediately on KDE; elsewhere bind 'flameshot gui' in "
+                    "system settings). Ignored when conflicting with an "
+                    "existing global shortcut."));
+    lay->addWidget(label);
+    lay->addWidget(m_launchShortcutEdit);
+    lay->addStretch();
+    m_scrollAreaLayout->addWidget(row);
+    connect(m_launchShortcutEdit,
+            &QKeySequenceEdit::keySequenceChanged,
+            this,
+            &GeneralConf::launchShortcutChanged);
+}
+
+void GeneralConf::launchShortcutChanged(const QKeySequence& seq)
+{
+    const QString key =
+      seq.isEmpty() ? QStringLiteral("F1") : seq.toString(QKeySequence::NativeText);
+    ConfigHandler().setLaunchShortcut(key);
+    // 守护进程存活时即时刷新 kwin 脚本注册（非 KDE 环境内部自动跳过）
+    FlameshotDaemon::refreshLaunchShortcut();
+}
+
+// flameshot-ocr: 界面主题（亮色/暗色/跟随系统）
+void GeneralConf::initUiTheme()
+{
+    auto* row = new QWidget(this);
+    auto* lay = new QHBoxLayout(row);
+    lay->setContentsMargins(0, 0, 0, 0);
+    auto* label = new QLabel(OcrPanel::tr2("界面主题", "UI theme"), row);
+    m_uiTheme = new QComboBox(row);
+    m_uiTheme->addItem(OcrPanel::tr2("跟随系统", "Follow system"));
+    m_uiTheme->addItem(OcrPanel::tr2("亮色", "Light"));
+    m_uiTheme->addItem(OcrPanel::tr2("暗色", "Dark"));
+    const QString cur = ConfigHandler().uiTheme().toLower();
+    m_uiTheme->setCurrentIndex(cur == QLatin1String("light")   ? 1
+                               : cur == QLatin1String("dark") ? 2
+                                                              : 0);
+    m_uiTheme->setToolTip(
+      OcrPanel::tr2("作用于 OCR 结果面板与各工具条（新打开的窗口生效）。",
+                    "Applies to the OCR panel and toolbars (newly opened "
+                    "windows)."));
+    lay->addWidget(label);
+    lay->addWidget(m_uiTheme);
+    lay->addStretch();
+    m_scrollAreaLayout->addWidget(row);
+    connect(m_uiTheme,
+            &QComboBox::activated,
+            this,
+            &GeneralConf::setUiTheme);
+}
+
+void GeneralConf::setUiTheme(int index)
+{
+    ConfigHandler().setUiTheme(index == 1   ? QStringLiteral("light")
+                               : index == 2 ? QStringLiteral("dark")
+                                            : QStringLiteral("system"));
+}
+
+// flameshot-ocr: 工具条图标尺寸
+void GeneralConf::initToolbarIconSize()
+{
+    auto* row = new QWidget(this);
+    auto* lay = new QHBoxLayout(row);
+    lay->setContentsMargins(0, 0, 0, 0);
+    auto* label =
+      new QLabel(OcrPanel::tr2("工具条图标大小", "Toolbar icon size"), row);
+    m_toolbarIconSize = new QSpinBox(row);
+    m_toolbarIconSize->setRange(16, 48);
+    m_toolbarIconSize->setSuffix(QStringLiteral(" px"));
+    m_toolbarIconSize->setValue(ConfigHandler().toolbarIconSize());
+    m_toolbarIconSize->setToolTip(
+      OcrPanel::tr2("截图工具条、预选工具条与钉图工具条的图标尺寸（新窗口"
+                    "生效）。",
+                    "Icon size for the capture toolbar, pre-selection "
+                    "toolbar and pin toolbar (applies to new windows)."));
+    lay->addWidget(label);
+    lay->addWidget(m_toolbarIconSize);
+    lay->addStretch();
+    m_scrollAreaLayout->addWidget(row);
+    connect(m_toolbarIconSize,
+            &QSpinBox::valueChanged,
+            this,
+            &GeneralConf::setToolbarIconSize);
+}
+
+void GeneralConf::setToolbarIconSize(int v)
+{
+    ConfigHandler().setToolbarIconSize(v);
+}
+
+// flameshot-ocr: OCR 结果面板位置
+void GeneralConf::initOcrPanelPosition()
+{
+    auto* row = new QWidget(this);
+    auto* lay = new QHBoxLayout(row);
+    lay->setContentsMargins(0, 0, 0, 0);
+    auto* label =
+      new QLabel(OcrPanel::tr2("识别面板位置", "OCR panel position"), row);
+    m_ocrPanelPosition = new QComboBox(row);
+    m_ocrPanelPosition->addItem(OcrPanel::tr2("自动（先右后左）",
+                                              "Auto (right, then left)"));
+    m_ocrPanelPosition->addItem(OcrPanel::tr2("选区左侧", "Left of selection"));
+    m_ocrPanelPosition->addItem(OcrPanel::tr2("选区右侧", "Right of selection"));
+    m_ocrPanelPosition->addItem(OcrPanel::tr2("选区上方", "Above selection"));
+    m_ocrPanelPosition->addItem(OcrPanel::tr2("选区下方", "Below selection"));
+    const QString cur = ConfigHandler().ocrPanelPosition().toLower();
+    m_ocrPanelPosition->setCurrentIndex(cur == QLatin1String("left")   ? 1
+                                        : cur == QLatin1String("right") ? 2
+                                        : cur == QLatin1String("top")   ? 3
+                                        : cur == QLatin1String("bottom") ? 4
+                                                                         : 0);
+    lay->addWidget(label);
+    lay->addWidget(m_ocrPanelPosition);
+    lay->addStretch();
+    m_scrollAreaLayout->addWidget(row);
+    connect(m_ocrPanelPosition,
+            &QComboBox::activated,
+            this,
+            &GeneralConf::setOcrPanelPosition);
+}
+
+void GeneralConf::setOcrPanelPosition(int index)
+{
+    ConfigHandler().setOcrPanelPosition(
+      index == 1   ? QStringLiteral("left")
+      : index == 2 ? QStringLiteral("right")
+      : index == 3 ? QStringLiteral("top")
+      : index == 4 ? QStringLiteral("bottom")
+                   : QStringLiteral("auto"));
 }
 
 void GeneralConf::importConfiguration()

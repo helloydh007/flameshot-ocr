@@ -7,6 +7,7 @@
 #include "src/core/qguiappcurrentscreen.h"
 #include "src/utils/globalvalues.h"
 #include <QKeyEvent>
+#include <QLabel>
 #include <QScreen>
 
 InfoWindow::InfoWindow(QWidget* parent)
@@ -19,6 +20,19 @@ InfoWindow::InfoWindow(QWidget* parent)
     ui->IconSVG->setPixmap(QPixmap(GlobalValues::iconPath()));
     ui->VersionDetails->setText(GlobalValues::versionInfo());
     ui->OperatingSystemDetails->setText(generateKernelString());
+
+    // flameshot-ocr: 关于窗口展示本分支的仓库地址（可点击打开）
+    auto* repoLink = new QLabel(this);
+    repoLink->setTextFormat(Qt::RichText);
+    repoLink->setOpenExternalLinks(true);
+    repoLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    repoLink->setAlignment(Qt::AlignCenter);
+    repoLink->setText(
+      QStringLiteral("<a href=\"https://github.com/helloydh007/"
+                     "flameshot-ocr\">github.com/helloydh007/"
+                     "flameshot-ocr</a>"));
+    ui->verticalLayout->insertWidget(ui->verticalLayout->count() - 1,
+                                     repoLink);
 
     connect(
       ui->CopyInfoButton, &QPushButton::clicked, this, &InfoWindow::copyInfo);

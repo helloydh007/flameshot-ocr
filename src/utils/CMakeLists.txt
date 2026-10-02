@@ -8,6 +8,7 @@ target_sources(
           valuehandler.h
           strfparse.h
           ocrhelper.h
+          uitheme.h
 )
 
 target_sources(
@@ -27,6 +28,7 @@ target_sources(
           history.cpp
           strfparse.cpp
           ocrhelper.cpp
+          uitheme.cpp
 )
 
 IF (UNIX AND NOT APPLE)

@@ -11,6 +11,7 @@
 #include "src/utils/confighandler.h"
 #include "src/utils/globalvalues.h"
 #include "src/utils/ocrhelper.h"
+#include "src/utils/uitheme.h"
 #include "src/utils/pathinfo.h"
 #include "src/widgets/capture/ocrpanel.h"
 
@@ -208,7 +209,7 @@ void PinWidget::buildToolBar()
                              PinAnnotator::Tool tool) {
         auto* button = new QToolButton(m_toolBarRow);
         button->setIcon(QIcon(PathInfo::whiteIconPath() + icon));
-        button->setIconSize(QSize(18, 18));
+        button->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
         button->setToolTip(tip);
         button->setCheckable(true);
         button->setChecked(tool == m_annotator->tool());
@@ -254,7 +255,7 @@ void PinWidget::buildToolBar()
     auto* fillButton = new QToolButton(m_toolBarRow);
     fillButton->setIcon(QIcon(PathInfo::whiteIconPath() +
                               QStringLiteral("rectangle")));
-    fillButton->setIconSize(QSize(18, 18));
+    fillButton->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
     fillButton->setToolTip(
       OcrPanel::tr2("形状填充：选中 = 实心，未选 = 只显示边框",
                     "Shape fill: on = solid, off = outline only"));
@@ -307,7 +308,7 @@ void PinWidget::buildToolBar()
     auto* widthButton = new QToolButton(m_toolBarRow);
     widthButton->setIcon(QIcon(PathInfo::whiteIconPath() +
                                QStringLiteral("minus.svg")));
-    widthButton->setIconSize(QSize(18, 18));
+    widthButton->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
     widthButton->setToolTip(OcrPanel::tr2("粗细", "Width"));
     widthButton->setCursor(Qt::PointingHandCursor);
     widthButton->setPopupMode(QToolButton::InstantPopup);
@@ -331,7 +332,7 @@ void PinWidget::buildToolBar()
                                std::function<void()> fn) {
         auto* button = new QToolButton(m_toolBarRow);
         button->setIcon(QIcon(PathInfo::whiteIconPath() + icon));
-        button->setIconSize(QSize(18, 18));
+        button->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
         button->setToolTip(tip);
         button->setAutoRaise(true);
         button->setCursor(Qt::PointingHandCursor);
@@ -367,18 +368,26 @@ void PinWidget::buildToolBar()
     addActionButton(QStringLiteral("close"), OcrPanel::tr2("关闭", "Close"),
                     [this]() { closePin(); });
 
+    // 工具条配色走 UiTheme 令牌（亮/暗/跟随系统）
+    QColor tbBg = UiTheme::panelBg();
+    tbBg.setAlpha(238);
     m_toolBarRow->setStyleSheet(
-      QStringLiteral("#pinToolBar { background-color: #1a1a1fee; "
-                     "border: 1px solid #3f3f46; border-top: none; "
+      QStringLiteral("#pinToolBar { background-color: %2; "
+                     "border: 1px solid %3; border-top: none; "
                      "border-radius: 0 0 8px 8px; }"
-                     "#pinToolBar QToolButton { color: #d6d6dc; "
+                     "#pinToolBar QToolButton { color: %4; "
                      "background: transparent; border: none; "
                      "border-radius: 14px; padding: 5px; }"
-                     "#pinToolBar QToolButton:hover { background: #3f3f46; "
-                     "color: #ffffff; }"
+                     "#pinToolBar QToolButton:hover { background: %5; "
+                     "color: %6; }"
                      "#pinToolBar QToolButton:checked { background: %1; "
-                     "color: #ffffff; }")
-        .arg(accent));
+                     "color: %6; }")
+        .arg(accent,
+             tbBg.name(QColor::HexArgb),
+             UiTheme::panelBorder().name(),
+             UiTheme::panelFg().name(),
+             UiTheme::hoverBg().name(),
+             UiTheme::copyTextFg().name()));
 
     // 关键：把工具条加入钉图主布局（否则它是 0 尺寸子控件、永远不可见/不可用）；
     // 默认隐藏，可在钉图右键菜单中开启（pinShowToolbar 记忆选择）

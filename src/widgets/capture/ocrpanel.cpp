@@ -3,6 +3,7 @@
 
 #include "ocrpanel.h"
 #include "src/utils/confighandler.h"
+#include "src/utils/uitheme.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
@@ -131,21 +132,42 @@ OcrPanel::OcrPanel(QWidget* parent)
             });
 
     const QString accent = ConfigHandler().uiColor().name();
-    setStyleSheet(QStringLiteral(
-      "#ocrTitle { color: #e6e6e6; font-weight: bold; font-size: 13px; }"
-      "#ocrText { background-color: #26262b; color: #ececec; border: none; "
-      "border-radius: 6px; padding: 6px; font-size: 13px; "
-      "selection-background-color: %1; }"
-      "#ocrStatus { color: #9a9aa2; font-size: 11px; }"
-      "#ocrMin, #ocrClose { color: #9a9aa2; background: transparent; "
-      "border: none; font-size: 13px; padding: 1px 7px; }"
-      "#ocrMin:hover, #ocrClose:hover { color: #ffffff; "
-      "background: #3f3f46; border-radius: 4px; }"
-      "#ocrCopy { background-color: %1; color: #ffffff; border: none; "
-      "border-radius: 5px; padding: 6px 16px; font-size: 12px; }"
-      "#ocrCopy:hover { background-color: %2; }"
-      "#ocrCopy:disabled { background-color: #3c3c44; color: #77777f; }")
-      .arg(accent, QColor(accent).lighter(115).name()));
+    // flameshot-ocr: 面板配色走 UiTheme 令牌（亮/暗/跟随系统），
+    // 不再硬编码暗色
+    const bool dark = UiTheme::isDarkTheme();
+    const QString bg = UiTheme::panelBg().name();
+    const QString border = UiTheme::panelBorder().name();
+    const QString fg = UiTheme::panelFg().name();
+    const QString fgDim = UiTheme::panelFgDim().name();
+    const QString hover = UiTheme::hoverBg().name();
+    const QString input = UiTheme::inputBg().name();
+    const QString inputSel = dark ? accent : QColor(accent).lighter(105).name();
+    setStyleSheet(
+      QStringLiteral(
+        "#ocrTitle { color: %3; font-weight: bold; font-size: 13px; }"
+        "#ocrText { background-color: %6; color: %4; border: none; "
+        "border-radius: 6px; padding: 6px; font-size: 13px; "
+        "selection-background-color: %8; }"
+        "#ocrStatus { color: %5; font-size: 11px; }"
+        "#ocrMin, #ocrClose { color: %5; background: transparent; "
+        "border: none; font-size: 13px; padding: 1px 7px; }"
+        "#ocrMin:hover, #ocrClose:hover { color: %4; "
+        "background: %7; border-radius: 4px; }"
+        "#ocrCopy { background-color: %1; color: %9; border: none; "
+        "border-radius: 5px; padding: 6px 16px; font-size: 12px; }"
+        "#ocrCopy:hover { background-color: %2; }"
+        "#ocrCopy:disabled { background-color: %7; color: %5; }")
+        .arg(accent,
+             QColor(accent).lighter(dark ? 115 : 125).name(),
+             fg,
+             fg,
+             fgDim,
+             input,
+             hover,
+             inputSel,
+             UiTheme::copyTextFg().name()));
+    Q_UNUSED(bg)
+    Q_UNUSED(border)
 }
 
 QString OcrPanel::tr2(const char* zh, const char* en)
@@ -159,8 +181,10 @@ void OcrPanel::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(QColor(63, 63, 70), 1));
-    painter.setBrush(QColor(26, 26, 31, 245));
+    painter.setPen(QPen(UiTheme::panelBorder(), 1));
+    QColor bg = UiTheme::panelBg();
+    bg.setAlpha(245);
+    painter.setBrush(bg);
     painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
 }
 
@@ -397,14 +421,65 @@ void OcrPanel::positionBeside(const QRect& selection)
         area = scr ? scr->availableGeometry()
                    : QRect(QPoint(0, 0), QSize(1920, 1080));
     }
-    int x = selection.right() + 1 + 12;
-    if (x + width() > area.right() - 4) {
-        // 右侧放不下时翻到选区左侧
-        x = selection.left() - 12 - width();
-    }
-    if (x < 4) {
-        x = qMax(4, area.right() - width() - 4);
-    }
+    // flameshot-ocr: 面板位置可配置（ocrPanelPosition：auto/left/right/
+    // top/bottom；auto 保持原「先右后左」自动翻转行为）
+    const UiTheme::PanelPos pref = UiTheme::ocrPanelPosition();
+    int x = qBound(4, selection.left(), qMax(4, area.right() - width() - 4));
     int y = qBound(4, selection.top(), qMax(4, area.bottom() - height() - 4));
+    const bool fitsRight =
+      selection.right() + 1 + 12 + width() <= area.right() - 4;
+    const bool fitsLeft = selection.left() - 12 - width() >= 4;
+    switch (pref) {
+        case UiTheme::PanelPos::Right:
+            if (fitsRight) {
+                x = selection.right() + 1 + 12;
+            } else if (fitsLeft) {
+                x = selection.left() - 12 - width();
+            }
+            break;
+        case UiTheme::PanelPos::Left:
+            if (fitsLeft) {
+                x = selection.left() - 12 - width();
+            } else if (fitsRight) {
+                x = selection.right() + 1 + 12;
+            }
+            break;
+        case UiTheme::PanelPos::Top:
+            if (selection.top() - 12 - height() >= 4) {
+                y = selection.top() - 12 - height();
+            } else {
+                y = qMin(selection.bottom() + 12,
+                         area.bottom() - height() - 4);
+            }
+            x = qBound(4,
+                       selection.left() +
+                         (selection.width() - width()) / 2,
+                       qMax(4, area.right() - width() - 4));
+            break;
+        case UiTheme::PanelPos::Bottom:
+        default:
+            if (pref == UiTheme::PanelPos::Bottom) {
+                if (selection.bottom() + 12 + height() <=
+                    area.bottom() - 4) {
+                    y = selection.bottom() + 12;
+                } else if (selection.top() - 12 - height() >= 4) {
+                    y = selection.top() - 12 - height();
+                }
+                x = qBound(4,
+                           selection.left() +
+                             (selection.width() - width()) / 2,
+                           qMax(4, area.right() - width() - 4));
+                break;
+            }
+            // Auto：先右后左，仍放不下则贴右缘
+            if (fitsRight) {
+                x = selection.right() + 1 + 12;
+            } else if (fitsLeft) {
+                x = selection.left() - 12 - width();
+            } else {
+                x = qMax(4, area.right() - width() - 4);
+            }
+            break;
+    }
     move(x, y);
 }

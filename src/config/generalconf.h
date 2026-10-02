@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QSpinBox;
 class QComboBox;
+class QKeySequenceEdit;
 
 class GeneralConf : public QWidget
 {
@@ -62,6 +63,11 @@ private slots:
     void setJpegQuality(int v);
     void setReverseArrow(bool checked);
     void setInsecurePixelate(bool checked);
+    // flameshot-ocr: 启动快捷键 / 主题 / 图标大小 / OCR 面板位置
+    void launchShortcutChanged(const QKeySequence& seq);
+    void setUiTheme(int index);
+    void setToolbarIconSize(int v);
+    void setOcrPanelPosition(int index);
 
 private:
     const QString chooseFolder(const QString& currentPath = "");
@@ -70,6 +76,11 @@ private:
     void initAntialiasingPinZoom();
     void initAutoCloseIdleDaemon();
     void initAutostart();
+    // flameshot-ocr: 启动快捷键 / 主题 / 图标尺寸 / OCR 面板位置
+    void initLaunchShortcut();
+    void initUiTheme();
+    void initToolbarIconSize();
+    void initOcrPanelPosition();
 #if !defined(DISABLE_UPDATE_CHECKER)
     void initCheckForUpdates();
 #endif
@@ -150,4 +161,9 @@ private:
     QSpinBox* m_jpegQuality;
     QCheckBox* m_reverseArrow;
     QCheckBox* m_insecurePixelate;
+    // flameshot-ocr: 启动快捷键 / 主题 / 图标大小 / OCR 面板位置
+    QKeySequenceEdit* m_launchShortcutEdit;
+    QComboBox* m_uiTheme;
+    QSpinBox* m_toolbarIconSize;
+    QComboBox* m_ocrPanelPosition;
 };
