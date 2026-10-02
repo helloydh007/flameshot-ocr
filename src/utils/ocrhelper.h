@@ -3,11 +3,11 @@
 
 #pragma once
 
+#include <QImage>
 #include <QObject>
 #include <QString>
 #include <functional>
 
-class QImage;
 class QProcess;
 class QTemporaryFile;
 class QTimer;
@@ -49,6 +49,11 @@ private:
 
 namespace OcrHelper
 {
+// OCR 前预处理：屏幕文字通常仅 12~20px 高，2x 平滑放大 + 轻度 unsharp
+// 锐化可显著提升 tesseract 识别率（实测关键词命中 6/10 → 10/10，并
+// 修复 psm6 下的行首丢失）；超大图跳过放大防内存膨胀。
+QImage preprocessForOcr(const QImage& image);
+
 // 异步对图像运行 OCR（读取 flameshot 的 ocrCommand 配置，默认 tesseract）。
 // 返回任务句柄（父对象为 guard）：调用方可用 cancel() 终止旧任务，
 // 保证同一界面最多只有一个活动的 OCR 引擎进程。

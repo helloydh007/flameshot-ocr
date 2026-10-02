@@ -1290,6 +1290,18 @@ void CaptureWidget::runSelfTest()
                            << "active tesseract:" << procs;
             }
 
+            // 26: OCR 预处理 —— 2x 放大 + 锐化：尺寸翻倍、内容非空
+            {
+                QImage test(120, 80, QImage::Format_ARGB32);
+                test.fill(Qt::white);
+                const QImage pre = OcrHelper::preprocessForOcr(test);
+                const bool ok = pre.size() == QSize(240, 160) &&
+                                !pre.isNull() &&
+                                pre.format() == QImage::Format_RGB888;
+                qWarning() << "SELFTEST 26 ocr-preprocess:"
+                           << (ok ? "PASS" : "FAIL") << pre.size();
+            }
+
             // 清理测试钉图：无父控件的 widget 不随进程退出析构，
             // 显式销毁以释放其 OCR 子对象（QProcess/QTemporaryFile）
             pin->deleteLater();

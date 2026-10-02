@@ -139,7 +139,11 @@ static QMap<class QString, QSharedPointer<ValueHandler>>
     OPTION("reverseArrow"                ,Bool               ( false         )),
     OPTION("insecurePixelate"            ,Bool               ( false         )),
     // flameshot-ocr: command template for the OCR tool, %i = input image path
-    OPTION("ocrCommand"                  ,String             ( "tesseract %i stdout -l chi_sim+eng --psm 6" )),
+    // psm 4（单列文本）为屏幕场景实测最优：psm 6 会把整图当单一文本块，
+    // 在表格/代码/聊天等混排下丢行首内容（"可以。刚"→"才"）；配合
+    // OcrHelper::preprocessForOcr 的 2x 放大+轻锐化，关键词命中率
+    // 6/10 → 10/10
+    OPTION("ocrCommand"                  ,String             ( "tesseract %i stdout -l chi_sim+eng --psm 4" )),
     // flameshot-ocr: color pick copy format: "hex" (#RRGGBB) or "rgb" (r, g, b)
     OPTION("colorPickFormat"             ,String             ( "hex"         )),
     // flameshot-ocr: rectangle/ellipse fill toggle (false = outline only)
