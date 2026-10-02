@@ -1007,7 +1007,7 @@ void CaptureWidget::runSelfTest()
             qWarning() << "SELFTEST 10 pin-annotator-found:"
                        << (annotator ? "PASS" : "FAIL")
                        << "geo:" << (annotator ? annotator->geometry() : QRect())
-                       << "labelGeo:" << pin2->findChild<QLabel*>()->geometry();
+                       << "viewGeo:" << pin2->viewWidget()->geometry();
             auto annoPress = [&](const QPoint& p) {
                 QMouseEvent ev(QEvent::MouseButtonPress, QPointF(p),
                                QPointF(p), Qt::LeftButton, Qt::LeftButton,
@@ -1116,10 +1116,9 @@ void CaptureWidget::runSelfTest()
 
             // 16: displayScale 含 DPR（125% 屏应 ≈1.25，修复坐标偏移）
             {
-                const QPixmap labelPix =
-                  pin2->findChild<QLabel*>()->pixmap();
+                const QPixmap labelPix = pin2->viewPixmap();
                 qWarning() << "GEODBG pin2 size:" << pin2->size()
-                           << "label:" << pin2->findChild<QLabel*>()->size()
+                           << "view:" << pin2->viewWidget()->size()
                            << "pixmap:" << labelPix.size()
                            << "dpr:" << labelPix.devicePixelRatio();
             }
@@ -1138,16 +1137,12 @@ void CaptureWidget::runSelfTest()
             annoRelease(QPoint(360, 160));
             {
                 const QImage outlineImg =
-                  annotator->renderToImage(pin2->findChild<QLabel*>()
-                                             ->pixmap()
-                                             .size());
+                  annotator->renderToImage(pin2->viewPixmap().size());
                 const QColor center1 =
                   outlineImg.pixelColor(QPoint(350, 150));
                 annotator->setFill(true);
                 const QImage filledImg =
-                  annotator->renderToImage(pin2->findChild<QLabel*>()
-                                             ->pixmap()
-                                             .size());
+                  annotator->renderToImage(pin2->viewPixmap().size());
                 const QColor center2 =
                   filledImg.pixelColor(QPoint(350, 150));
                 annotator->setFill(false);
@@ -1168,7 +1163,7 @@ void CaptureWidget::runSelfTest()
             QApplication::processEvents(QEventLoop::AllEvents, 50);
             {
                 const QImage base =
-                  pin2->findChild<QLabel*>()->pixmap().toImage();
+                  pin2->viewPixmap().toImage();
                 const QImage composited =
                   annotator->renderToImage(base.size());
                 bool differs = false;

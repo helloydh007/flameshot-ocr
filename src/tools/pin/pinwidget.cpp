@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2017-2019 Alejandro Sirgo Rica & Contributors
 #include <QGraphicsDropShadowEffect>
-#include <QGraphicsOpacityEffect>
 #include <QPinchGesture>
 #include <QWindow>
 
@@ -38,13 +37,63 @@ constexpr qreal STEP = 0.03;
 constexpr qreal MIN_SIZE = 100.0;
 }
 
+// flameshot-ocr: 图片显示控件 —— 直接以 painter.setOpacity 绘制，
+// 替代 QGraphicsOpacityEffect（特效渲染会丢 pixmap 的 DPR，缩放屏上
+// 图片会缩小；painter 绘制则完全保真且透明度真实生效）
+class PinImageView : public QWidget
+{
+public:
+    explicit PinImageView(QWidget* parent = nullptr)
+      : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents, false);
+    }
+    void setViewPixmap(const QPixmap& p)
+    {
+        m_pix = p;
+        setMinimumSize(m_pix.size() / (m_pix.devicePixelRatio() > 0
+                                         ? m_pix.devicePixelRatio()
+                                         : 1.0));
+        update();
+    }
+    QPixmap viewPixmap() const { return m_pix; }
+    void setViewOpacity(qreal o)
+    {
+        if (m_viewOpacity != o) {
+            m_viewOpacity = o;
+            update();
+        }
+    }
+
+protected:
+    QSize sizeHint() const override
+    {
+        return m_pix.size() / (m_pix.devicePixelRatio() > 0
+                                 ? m_pix.devicePixelRatio()
+                                 : 1.0);
+    }
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        if (m_viewOpacity < 1.0) {
+            painter.setOpacity(m_viewOpacity);
+        }
+        painter.drawPixmap(QPoint(0, 0), m_pix);
+    }
+
+private:
+    QPixmap m_pix;
+    qreal m_viewOpacity = 1.0;
+};
+
 PinWidget::PinWidget(const QPixmap& pixmap,
                      const QRect& geometry,
                      QWidget* parent)
   : QWidget(parent)
   , m_pixmap(pixmap)
   , m_layout(new QVBoxLayout(this))
-  , m_label(new QLabel())
+  , m_label(new PinImageView(this))
   , m_shadowEffect(new QGraphicsDropShadowEffect(this))
 {
     setWindowIcon(QIcon(GlobalValues::iconPath()));
@@ -68,9 +117,7 @@ PinWidget::PinWidget(const QPixmap& pixmap,
     // flameshot-ocr: pixmap 贴 label 左上且 label 不被拉伸——
     // 保证标注层（= label 几何）与图片显示区原点重合，
     // 否则工具条比图片宽时 pixmap 居中、坐标整体错位
-    m_label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    m_label->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    m_label->setPixmap(m_pixmap);
+    m_label->setViewPixmap(m_pixmap);
     m_layout->addWidget(m_label);
     m_layout->setAlignment(m_label, Qt::AlignLeft | Qt::AlignTop);
 
@@ -347,18 +394,14 @@ void PinWidget::closePin()
     close();
 }
 // flameshot-ocr: Wayland 下 setWindowOpacity 是空操作（无对应协议），
-// 透明度改为渲染层实现：给图片 QLabel 加 QGraphicsOpacityEffect。
+// 透明度改为渲染层实现：图片视图以 painter 透明度绘制。
 // 仅影响显示，复制/保存仍导出原图
 void PinWidget::applyOpacity()
 {
-    if (!m_opacityEffect) {
-        m_opacityEffect = new QGraphicsOpacityEffect(m_label);
-        m_label->setGraphicsEffect(m_opacityEffect);
-    }
-    m_opacityEffect->setOpacity(m_opacity);
+    m_label->setViewOpacity(m_opacity);
 }
 
-void PinWidget::showOpacityToast()
+void PinWidget::showCenterToast(const QString& text)
 {
     if (!m_opacityToast) {
         m_opacityToast = new QLabel(this);
@@ -370,9 +413,7 @@ void PinWidget::showOpacityToast()
         m_opacityToast->setAttribute(Qt::WA_TransparentForMouseEvents);
         m_opacityToast->setAlignment(Qt::AlignCenter);
     }
-    m_opacityToast->setText(
-      OcrPanel::tr2("透明度 %1%", "Opacity %1%")
-        .arg(qRound(m_opacity * 100)));
+    m_opacityToast->setText(text);
     m_opacityToast->adjustSize();
     m_opacityToast->move((width() - m_opacityToast->width()) / 2,
                          (height() - m_opacityToast->height()) / 2);
@@ -390,7 +431,8 @@ bool PinWidget::scrollEvent(QWheelEvent* event)
             m_opacity = qBound(0.1, m_opacity + (angle > 0 ? 0.05 : -0.05),
                                1.0);
             applyOpacity();
-            showOpacityToast();
+            showCenterToast(OcrPanel::tr2("透明度 %1%", "Opacity %1%")
+                              .arg(qRound(m_opacity * 100)));
         }
         event->accept();
         return true;
@@ -409,6 +451,10 @@ bool PinWidget::scrollEvent(QWheelEvent* event)
                                      ? m_currentStepScaleFactor + STEP
                                      : m_currentStepScaleFactor - STEP;
         m_expanding = m_currentStepScaleFactor >= 1.0;
+        // flameshot-ocr: 滚轮缩放实时显示当前缩放百分比
+        showCenterToast(OcrPanel::tr2("缩放 %1%", "Zoom %1%")
+                          .arg(qRound((m_scaleFactor * m_currentStepScaleFactor) *
+                                      100)));
     }
 #if defined(Q_OS_MACOS)
     // ScrollEnd is currently supported only on Mac OSX
@@ -605,6 +651,11 @@ void PinWidget::ensureKeepAboveRule()
         QStringLiteral("org.kde.kwin.Script.run") });
 }
 
+QWidget* PinWidget::viewWidget() const
+{
+    return m_label;
+}
+
 void PinWidget::positionAnnotator()
 {
     if (m_annotator) {
@@ -651,7 +702,7 @@ void PinWidget::paintEvent(QPaintEvent* event)
 
         const QPixmap pix = m_pixmap.scaled(nw, nh, aspectRatio, transformType);
 
-        m_label->setPixmap(pix);
+        m_label->setViewPixmap(pix);
         adjustSize();
         positionAnnotator();
         if (m_annotator && !m_pixmap.isNull()) {
@@ -759,11 +810,12 @@ void PinWidget::copyToClipboard()
 void PinWidget::runOcr()
 {
     if (!m_ocrPanel) {
-        m_ocrPanel = new OcrPanel(nullptr);
-        m_ocrPanel->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint |
-                                   Qt::WindowStaysOnTopHint);
+        // flameshot-ocr: 作为钉图子控件显示（Wayland 顶层窗口无法被程序
+        // 定位——之前面板会被合成器丢到图片下方甚至屏幕外）。子控件模式
+        // 下 positionBeside 在钉图范围内自动判断左右位置
+        m_ocrPanel = new OcrPanel(this);
     }
-    m_ocrPanel->showLoading(geometry());
+    m_ocrPanel->showLoading(rect());
     OcrHelper::run(
       m_pixmap.toImage(), this, [this](bool ok, const QString& result) {
           if (!m_ocrPanel) {

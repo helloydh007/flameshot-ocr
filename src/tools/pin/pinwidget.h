@@ -9,13 +9,13 @@
 #include <QWidget>
 
 class QLabel;
+class PinImageView;
 class QVBoxLayout;
 class QGestureEvent;
 class QPinchGesture;
 class QGraphicsDropShadowEffect;
 class OcrPanel;
 class QResizeEvent;
-class QGraphicsOpacityEffect;
 class QToolButton;
 
 class PinWidget : public QWidget
@@ -31,6 +31,8 @@ public:
     // Wayland 下 setWindowOpacity 无效，透明度通过渲染层实现
     void applyOpacity();
     qreal pinOpacity() const { return m_opacity; }
+    QPixmap viewPixmap() const { return m_pixmap; }
+    QWidget* viewWidget() const;
 
 protected:
     void mouseDoubleClickEvent(QMouseEvent*) override;
@@ -54,7 +56,7 @@ private:
     QPixmap compositedPixmap() const;
     void positionAnnotator();
     void buildToolBar();
-    void showOpacityToast();
+    void showCenterToast(const QString& text);
     void ensureKeepAboveRule();
 
     void rotateLeft();
@@ -65,14 +67,13 @@ private:
 
     QPixmap m_pixmap;
     QVBoxLayout* m_layout;
-    QLabel* m_label;
+    PinImageView* m_label;
     QGraphicsDropShadowEffect* m_shadowEffect;
     OcrPanel* m_ocrPanel = nullptr;
     PinAnnotator* m_annotator = nullptr;
     QWidget* m_toolBarRow = nullptr;
     QToolButton* m_colorButton = nullptr;
     QLabel* m_opacityToast = nullptr;
-    QGraphicsOpacityEffect* m_opacityEffect = nullptr;
     QVector<QPair<PinAnnotator::Tool, QToolButton*>> m_toolButtons;
     QColor m_baseColor, m_hoverColor;
 
