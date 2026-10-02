@@ -1260,6 +1260,27 @@ void CaptureWidget::runSelfTest()
         }
     }
 
+    // 21: 滚轮粗细提示圈跟随光标（上游固定在屏幕左上角）。
+    // Wayland 不允许程序移动光标，故验证定位公式=光标位置+偏移，
+    // 且不等于旧的“屏幕左上角+偏移”
+    {
+        const QPoint cursorLocal = mapFromGlobal(QCursor::pos());
+        QWheelEvent wheelEv(QPointF(cursorLocal), QPointF(cursorLocal),
+                            QPoint(0, 0), QPoint(0, 120), Qt::NoButton,
+                            Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(this, &wheelEv);
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+        const QPoint notifierPos = m_notifierBox->pos();
+        const int offset = m_notifierBox->width() / 4;
+        const QPoint expected = cursorLocal + QPoint(offset, offset);
+        // 定位公式 = 光标位置 + 偏移（上游为屏幕左上角 + 偏移）。
+        // 光标恰在屏幕角时两公式重合，故只断言公式匹配
+        qWarning() << "SELFTEST 21 wheel-notifier-follows-cursor:"
+                   << (notifierPos == expected ? "PASS" : "FAIL")
+                   << "notifier:" << notifierPos << "expected:" << expected;
+    }
+
+
     // ⑦ 确认框与「关闭返回悬浮工具条」行为（Esc / ✕ / 钉图三条路径）
     // 用轮询代替固定延时（消除弹窗出现时机与定时器的竞态）
     auto runConfirmTest =
@@ -2238,10 +2259,10 @@ void CaptureWidget::setToolSize(int size)
     m_context.toolSize = qBound(1, size, maxToolSize);
     updateTool(activeButtonTool());
 
-    QPoint topLeft =
-      QGuiAppCurrentScreen().currentScreen()->geometry().topLeft();
+    // flameshot-ocr: 提示圈跟随当前光标（上游固定放在屏幕左上角）
     int offset = m_notifierBox->width() / 4;
-    m_notifierBox->move(mapFromGlobal(topLeft) + QPoint(offset, offset));
+    m_notifierBox->move(mapFromGlobal(QCursor::pos()) +
+                        QPoint(offset, offset));
     m_notifierBox->showMessage(QString::number(m_context.toolSize));
 
     if (m_context.toolSize != oldSize) {
