@@ -712,8 +712,8 @@ void CaptureWidget::runSelfTest()
     synthMouseMove(QPoint(350, 340));
     synthMouseMove(QPoint(400, 380));
     synthMouseRelease(QPoint(400, 380));
-    qWarning() << "SELFTEST 3a auto-disarm:"
-               << (m_activeButton == nullptr ? "PASS" : "FAIL")
+    qWarning() << "SELFTEST 3a tool-stays-armed:"
+               << (m_activeButton != nullptr ? "PASS" : "FAIL")
                << "cursor:" << cursor().shape();
 
     // ② 点击笔迹 → 对象被选中，光标应为移动
@@ -1260,6 +1260,51 @@ void CaptureWidget::runSelfTest()
         }
     }
 
+    // 22: 填充开关端到端 —— 点击真实按钮 → 画矩形 → 像素断言
+    {
+        auto* preFill = m_preToolbar->findChild<QToolButton*>(
+          QStringLiteral("preFillBtn"));
+        qWarning() << "SELFTEST 22 fill-btn-found:"
+                   << (preFill ? "PASS" : "FAIL");
+        if (preFill) {
+            // 描边矩形
+            preFill->setChecked(false);
+            emit preFill->toggled(false);
+            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
+            synthMousePress(QPoint(300, 500));
+            synthMouseMove(QPoint(500, 620));
+            synthMouseRelease(QPoint(500, 620));
+            const QImage outlineShot = m_context.screenshot.copy(
+              QRect(300, 500, 200, 120)).toImage();
+            const QColor o = outlineShot.pixelColor(QPoint(100, 60));
+            // 切到填充，再画一个（画笔色 = drawColor，中心应为画笔色）
+            preFill->setChecked(true);
+            emit preFill->toggled(true);
+            // 第二个矩形画在不重叠位置（点到已有形状会被解释为选中）
+            synthMousePress(QPoint(300, 700));
+            synthMouseMove(QPoint(500, 820));
+            synthMouseRelease(QPoint(500, 820));
+            const QImage filledShot = m_context.screenshot.copy(
+              QRect(300, 700, 200, 120)).toImage();
+            const QColor f = filledShot.pixelColor(QPoint(100, 60));
+            const QColor pen = ConfigHandler().drawColor();
+            const bool outlineIsBg =
+              !(o == pen);
+            const bool filledIsPen =
+              (f == pen);
+            qWarning() << "SELFTEST 22 pretoolbar-fill-e2e:"
+                       << (outlineIsBg && filledIsPen ? "PASS" : "FAIL")
+                       << "outline-center:" << o.name()
+                       << "filled-center:" << f.name()
+                       << "pen:" << pen.name();
+            // 恢复
+            preFill->setChecked(false);
+            emit preFill->toggled(false);
+            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
+            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
+        }
+    }
+
     // 21: 滚轮粗细提示圈跟随光标（上游固定在屏幕左上角）。
     // Wayland 不允许程序移动光标，故验证定位公式=光标位置+偏移，
     // 且不等于旧的“屏幕左上角+偏移”
@@ -1324,11 +1369,11 @@ void CaptureWidget::runSelfTest()
     runConfirmTest(
       "6 esc-confirm",
       [this]() {
-          // 规范化前置状态（消除前序测试对选区/选中的残留影响），
-          // Esc 直达退出确认。
-          // （递增链「取消对象选中 → 取消选区 → 退出确认」见测试 8）
-          m_selection->hide();
+          // 规范化前置状态（消除前序测试对工具/选区/选中的残留影响），
+          // Esc 直达退出确认。（递增链见测试 8）
+          uncheckActiveTool();
           m_panel->setActiveLayer(-1);
+          m_selection->hide();
           deleteToolWidgetOrClose();
       },
       true);
@@ -1918,6 +1963,19 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
         return;
     }
 
+    // flameshot-ocr: 免选区连续绘制 —— 工具保持激活，点到已有形状则收起
+    // 工具（下方缩放/选中流程随之接管：可拖动/缩放），点到空白继续画
+    if (e->button() == Qt::LeftButton && m_activeButton &&
+        !m_selection->isVisible() && !m_eraserActive) {
+        int hitIdx = m_captureToolObjects.find(e->pos(), size());
+        if (hitIdx < 0) {
+            hitIdx = objectIndexContainingPoint(e->pos());
+        }
+        if (hitIdx >= 0) {
+            uncheckActiveTool();
+        }
+    }
+
     // flameshot-ocr: 角点缩放优先拦截（早于“取消选中”逻辑，
     // 且抓取区向框外扩展——放大方向从手柄外沿起拖也能抓住）
     if (e->button() == Qt::LeftButton && m_activeButton.isNull() &&
@@ -2211,17 +2269,6 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
                 pushToolToStack();
             } else if (!m_toolWidget) {
                 releaseActiveTool();
-            }
-            // flameshot-ocr: 免选区模式下画一笔即自动收笔，
-            // 让用户可以点击标注进行移动/调整
-            if (!m_selection->isVisible() && m_activeButton) {
-                m_activeButton = nullptr;
-                releaseActiveTool();
-                updateSelectionState();
-                updateCursor();
-                if (m_preToolbar) {
-                    m_preToolbar->setToolChecked(CaptureTool::NONE);
-                }
             }
         } else {
             if (m_activeToolIsMoved) {

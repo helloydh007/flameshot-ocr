@@ -13,6 +13,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QWindow>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScreen>
@@ -193,6 +194,14 @@ void OcrPanel::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton && !m_minimized) {
         const int edge = edgeAt(event->pos());
         if (edge != NoEdge) {
+            if (!parentWidget() && windowHandle()) {
+                // 顶层窗口（钉图伴随模式）：Wayland 禁止客户端自移/自缩放，
+                // 交给合成器的系统调整尺寸
+                if (windowHandle()->startSystemResize(Qt::Edges(edge))) {
+                    event->accept();
+                    return;
+                }
+            }
             // 边缘：开始拉伸调整大小
             m_resizeEdge = edge;
             m_startGeo = geometry();
@@ -201,6 +210,13 @@ void OcrPanel::mousePressEvent(QMouseEvent* event)
             return;
         }
         if (m_header->geometry().contains(event->pos())) {
+            if (!parentWidget() && windowHandle()) {
+                // 顶层窗口：系统拖动（同上，move() 在 Wayland 无效）
+                if (windowHandle()->startSystemMove()) {
+                    event->accept();
+                    return;
+                }
+            }
             // 标题栏：开始拖动
             m_dragging = true;
             m_dragOffset = event->globalPosition().toPoint() - pos();

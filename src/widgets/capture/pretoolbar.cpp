@@ -81,9 +81,10 @@ PreToolbar::PreToolbar(QWidget* parent)
 
     // 形状填充开关：选中=实心填充，未选=只显示边框（矩形/椭圆）
     m_fillBtn = flatButton(
-      this, "rectangle",
+      this, "shape-fill",
       OcrPanel::tr2("形状填充：选中 = 实心，未选 = 只显示边框",
                     "Shape fill: on = solid, off = outline only"));
+    m_fillBtn->setObjectName(QStringLiteral("preFillBtn"));
     m_fillBtn->setCheckable(true);
     m_fillBtn->setChecked(ConfigHandler().shapeFill());
     connect(m_fillBtn, &QToolButton::toggled, this, [this](bool checked) {
