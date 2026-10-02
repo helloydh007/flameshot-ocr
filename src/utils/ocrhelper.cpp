@@ -9,9 +9,17 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryFile>
+#include <QTimer>
 
 namespace
 {
+// OCR 引擎超时（ocrCommand 可配置，引擎可能卡死；30s 足够整屏 tesseract）
+constexpr int OCR_TIMEOUT_MS = 30'000;
+// terminate() 后等待正常退出的宽限期，超过则 SIGKILL
+constexpr int OCR_GRACE_MS = 1'500;
+// 识别输出上限（防异常 ocrCommand 输出巨量数据推高 GUI 内存）
+constexpr qsizetype OCR_OUTPUT_CAP = 8 * 1024 * 1024;
+
 // Collapse 3+ consecutive newlines in OCR output to one blank line.
 // static：避免每次识别都重新编译正则（审查报告 3.2）
 void normalizeOcrText(QString& text)
@@ -19,6 +27,10 @@ void normalizeOcrText(QString& text)
     static const QRegularExpression blankLines(QStringLiteral("\\n{3,}"));
     text.remove(QChar('\f'));
     text.replace(blankLines, QStringLiteral("\n\n"));
+    if (text.size() > OCR_OUTPUT_CAP) {
+        text.truncate(OCR_OUTPUT_CAP);
+        text += QStringLiteral("\n…(输出过大已截断)");
+    }
 }
 
 // 审查报告 4.3：tesseract 缺语言包时的 stderr 特征 → 追加安装提示
@@ -56,90 +68,177 @@ QString formatOcrError(const QString& program,
 }
 }
 
-namespace OcrHelper
+OcrTask::OcrTask(QObject* parent)
+  : QObject(parent)
 {
-void run(const QImage& image,
-         QObject* guard,
-         std::function<void(bool ok, const QString& result)> callback)
+}
+
+OcrTask::~OcrTask()
 {
-    if (!guard) {
+    // guard 销毁路径：立即终止外部进程，回收临时文件（子对象随父销毁）
+    if (m_proc && m_proc->state() != QProcess::NotRunning) {
+        m_proc->kill();
+        m_proc->waitForFinished(500);
+    }
+}
+
+void OcrTask::cancel()
+{
+    if (m_done) {
         return;
     }
-    auto* proc = new QProcess(guard);
+    m_superseded = true;
+    if (m_proc && m_proc->state() != QProcess::NotRunning) {
+        // finished 信号稍后到达 → finish(invokeCallback=false) 静默回收
+        terminateWithGrace();
+    } else {
+        finish(false, QString(), /*invokeCallback=*/false);
+    }
+}
+
+void OcrTask::terminateWithGrace()
+{
+    if (!m_proc || m_proc->state() == QProcess::NotRunning) {
+        return;
+    }
+    m_proc->terminate();
+    auto* grace = new QTimer(this);
+    grace->setSingleShot(true);
+    connect(grace, &QTimer::timeout, this, [this, grace]() {
+        grace->deleteLater();
+        if (!m_done && m_proc &&
+            m_proc->state() != QProcess::NotRunning) {
+            m_proc->kill(); // 引擎忽略 SIGTERM 时兜底强杀
+        }
+    });
+    grace->start(OCR_GRACE_MS);
+}
+
+void OcrTask::finish(bool ok, const QString& result, bool invokeCallback)
+{
+    if (m_done) {
+        return;
+    }
+    m_done = true;
+    if (m_timeoutTimer) {
+        m_timeoutTimer->stop();
+    }
+    if (invokeCallback && m_callback) {
+        m_callback(ok, result);
+    }
+    // 置空非常关键：对象 deleteLater 后指针悬空，~OcrTask（guard 销毁
+    // 路径）或后续 finish 再访问会 use-after-free（实测段错误）
+    if (m_tmp) {
+        m_tmp->deleteLater();
+        m_tmp = nullptr;
+    }
+    if (m_proc) {
+        m_proc->deleteLater();
+        m_proc = nullptr;
+    }
+}
+
+void OcrTask::start(const QImage& image, const QString& command)
+{
+    // m_proc 此处必为 nullptr（start 只会被调用一次，重复调用无入口）
+    // cppcheck-suppress publicAllocationError
+    m_proc = new QProcess(this);
     // 审查报告 4.1：文件名带 PID，便于多实例时排查与清理
-    auto* tmp = new QTemporaryFile(guard);
-    tmp->setFileTemplate(
+    m_tmp = new QTemporaryFile(this);
+    m_tmp->setFileTemplate(
       QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
       QStringLiteral("/flameshot-ocr-%1-XXXXXX.png")
         .arg(QCoreApplication::applicationPid()));
-    if (!tmp->open() || !image.save(tmp, "PNG")) {
-        callback(false, QStringLiteral("Cannot write temporary image"));
-        tmp->deleteLater();
-        proc->deleteLater();
+    if (!m_tmp->open() || !image.save(m_tmp, "PNG")) {
+        finish(false, QStringLiteral("Cannot write temporary image"), true);
         return;
     }
-    // 确保数据落盘后外部进程立即可读（审查报告 2.1）
-    tmp->flush();
+    // 确保数据落盘后外部进程立即可读；提前关闭句柄（文件仍由对象管理）
+    m_tmp->flush();
+    m_tmp->close();
 
-    QString command = ConfigHandler().ocrCommand();
-    command.replace(QStringLiteral("%i"), tmp->fileName());
+    // 审查报告 §12：先按 shell 规则拆分命令，再做 token 内的 %i 替换，
+    // 临时路径含空格时不会被二次拆分
     QStringList args = QProcess::splitCommand(command);
     if (args.isEmpty()) {
-        callback(false, QStringLiteral("Empty ocrCommand"));
-        tmp->deleteLater();
-        proc->deleteLater();
+        finish(false, QStringLiteral("Empty ocrCommand"), true);
         return;
     }
-    const QString program = args.takeFirst();
+    for (QString& arg : args) {
+        arg.replace(QStringLiteral("%i"), m_tmp->fileName());
+    }
+    m_program = args.takeFirst();
 
-    // 审查报告 1.1（高优先级）：QProcess/QTemporaryFile 以 guard 为父对象
-    // 但回调后从不销毁 —— 每次识别都会在钉图存活期间累积一对对象和临时
-    // 文件。现在每条结束路径都 deleteLater，任务完成后立即回收。
-    //
-    // 连接必须用 Qt::QueuedConnection：若用户在 OCR 进行中关闭钉图/截图，
-    // ~QProcess 会在析构内 kill+waitForFinished 并同步发出 finished，
-    // 直接连接会让回调触摸已销毁的面板（实测段错误）。排队连接把回调
-    // 投递到事件循环，而正在析构的对象的待投递事件会被 Qt 自动清除，
-    // 从根本上保证销毁路径安全。
+    // 审查报告 §2.2/§3：世代计数只丢弃旧结果、不停止旧进程——这里把
+    // 任务升级为可取消对象，并提供超时保护。连接用 Qt::QueuedConnection：
+    // 若 guard 在 OCR 进行中销毁，~QProcess 内部 kill 会同步发出 finished，
+    // 直接连接会让回调触摸已销毁的面板（实测段错误）；排队连接则会被
+    // Qt 的事件清除机制安全吞掉。
     QObject::connect(
-      proc,
+      m_proc,
       &QProcess::errorOccurred,
-      proc,
-      [proc, tmp, callback, program](QProcess::ProcessError error) {
+      m_proc,
+      [this](QProcess::ProcessError error) {
           if (error == QProcess::FailedToStart) {
-              callback(false,
-                       QStringLiteral("OCR %1: failed to start "
-                                      "(检查 ocrCommand 及已安装的引擎)")
-                         .arg(program));
-              tmp->deleteLater();
-              proc->deleteLater();
+              finish(false,
+                     QStringLiteral("OCR %1: failed to start "
+                                    "(检查 ocrCommand 及已安装的引擎)")
+                       .arg(m_program),
+                     !m_superseded);
           }
-          // 其它错误（Crashed/Timedout 等）之后仍会发出 finished，
-          // 由 finished 回调统一清理，避免双重销毁。
+          // 其它错误之后仍会发出 finished，由 finished 统一清理
       },
       Qt::QueuedConnection);
     QObject::connect(
-      proc,
+      m_proc,
       QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-      proc,
-      [proc, tmp, callback, program](int exitCode,
-                                     QProcess::ExitStatus status) {
+      m_proc,
+      [this](int exitCode, QProcess::ExitStatus status) {
           if (status != QProcess::NormalExit || exitCode != 0) {
               const QString err =
-                QString::fromLocal8Bit(proc->readAllStandardError());
-              callback(
-                false, formatOcrError(program, exitCode, err));
+                QString::fromLocal8Bit(m_proc->readAllStandardError());
+              finish(false, formatOcrError(m_program, exitCode, err),
+                     !m_superseded);
           } else {
               QString text =
-                QString::fromUtf8(proc->readAllStandardOutput());
+                QString::fromUtf8(m_proc->readAllStandardOutput());
               normalizeOcrText(text);
-              callback(true, text.trimmed());
+              finish(true, text.trimmed(), !m_superseded);
           }
-          tmp->deleteLater();
-          proc->deleteLater();
       },
       Qt::QueuedConnection);
 
-    proc->start(program, args);
+    // 超时：terminate → 宽限 → kill，立即按失败回调（除非已被新任务取代）
+    m_timeoutTimer = new QTimer(this);
+    m_timeoutTimer->setSingleShot(true);
+    connect(m_timeoutTimer, &QTimer::timeout, this, [this]() {
+        if (m_done) {
+            return;
+        }
+        terminateWithGrace();
+        finish(false,
+               QStringLiteral("OCR %1: 超时（%2 秒）已终止")
+                 .arg(m_program)
+                 .arg(OCR_TIMEOUT_MS / 1000),
+               !m_superseded);
+    });
+    m_timeoutTimer->start(OCR_TIMEOUT_MS);
+
+    m_proc->start(m_program, args);
+}
+
+namespace OcrHelper
+{
+OcrTask* run(const QImage& image,
+             QObject* guard,
+             const OcrTask::Callback& callback)
+{
+    if (!guard) {
+        return nullptr;
+    }
+    auto* task = new OcrTask(guard);
+    task->m_callback = callback;
+    task->start(image, ConfigHandler().ocrCommand());
+    return task;
 }
 }

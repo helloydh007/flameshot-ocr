@@ -56,6 +56,7 @@
 #include <functional>
 #include <memory>
 #include <QImage>
+#include <QProcess>
 #include <QWindow>
 #include <draggablewidgetmaker.h>
 
@@ -1260,6 +1261,33 @@ void CaptureWidget::runSelfTest()
                 if (panel) {
                     panel->hide();
                 }
+            }
+
+            // 25: OCR 任务取消 —— 连续两次 runOcr，旧引擎进程必须被终止
+            //（审查报告 §2.2：世代计数只丢结果不停止进程；修复后同一界面
+            // 最多一个活动 tesseract）
+            {
+                pin2->runOcr();
+                pin2->runOcr(); // 第二次立即 cancel 第一次（terminate）
+                // 给 tesseract 启动 + SIGTERM 生效留时间
+                for (int i = 0; i < 8; ++i) {
+                    QApplication::processEvents(QEventLoop::AllEvents, 100);
+                }
+                QProcess count;
+                count.start(
+                  QStringLiteral("sh"),
+                  { QStringLiteral("-c"),
+                    QStringLiteral("pgrep -c -x tesseract || echo 0") });
+                count.waitForFinished(3000);
+                const int procs =
+                  QString::fromLocal8Bit(count.readAllStandardOutput())
+                    .simplified()
+                    .split(QLatin1Char('\n'))
+                    .last()
+                    .toInt();
+                qWarning() << "SELFTEST 25 ocr-cancel:"
+                           << (procs <= 1 ? "PASS" : "FAIL")
+                           << "active tesseract:" << procs;
             }
 
             // 清理测试钉图：无父控件的 widget 不随进程退出析构，
@@ -2946,7 +2974,12 @@ void CaptureWidget::runOcr()
     const QImage crop = m_context.origScreenshot.copy(deviceRect).toImage();
 
     const quint64 generation = ++m_ocrGeneration;
-    OcrHelper::run(crop, this, [this, generation](bool ok, const QString& text) {
+    // 审查报告 §2.2：先 cancel 旧任务（终止旧引擎进程），保证最多一个
+    // 活动 OCR；世代计数继续负责丢弃迟到结果
+    if (m_ocrTask) {
+        m_ocrTask->cancel();
+    }
+    m_ocrTask = OcrHelper::run(crop, this, [this, generation](bool ok, const QString& text) {
         if (generation != m_ocrGeneration || !m_ocrPanel) {
             return; // 已被更新的识别任务取代，或面板已销毁
         }

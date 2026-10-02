@@ -1,0 +1,2773 @@
+diff --git a/src/widgets/capture/CMakeLists.txt b/src/widgets/capture/CMakeLists.txt
+index cdf53209..adbd98b4 100644
+--- a/src/widgets/capture/CMakeLists.txt
++++ b/src/widgets/capture/CMakeLists.txt
+@@ -12,6 +12,7 @@ target_sources(
+         magnifierwidget.h
+         notifierbox.h
+         ocrpanel.h
++        pretoolbar.h
+         modificationcommand.h)
+ 
+ target_sources(
+@@ -25,6 +26,7 @@ target_sources(
+         overlaymessage.cpp
+         notifierbox.cpp
+         ocrpanel.cpp
++        pretoolbar.cpp
+         selectionwidget.cpp
+         magnifierwidget.cpp
+         modificationcommand.cpp)
+diff --git a/src/widgets/capture/capturewidget.cpp b/src/widgets/capture/capturewidget.cpp
+index 5b91816b..3f489e40 100644
+--- a/src/widgets/capture/capturewidget.cpp
++++ b/src/widgets/capture/capturewidget.cpp
+@@ -12,9 +12,13 @@
+ #include "capturewidget.h"
+ #include "abstractlogger.h"
+ #include "copytool.h"
++#include "src/tools/abstractpathtool.h"
++#include "src/tools/abstracttwopointtool.h"
++#include "src/tools/pin/pinwidget.h"
+ #include "src/config/cacheutils.h"
+ #include "src/core/flameshot.h"
+ #include "src/core/qguiappcurrentscreen.h"
++#include "src/utils/ocrhelper.h"
+ #include "src/utils/screengrabber.h"
+ #include "src/utils/screenshotsaver.h"
+ #include "src/utils/systemnotification.h"
+@@ -23,6 +27,9 @@
+ #include "src/widgets/capture/modificationcommand.h"
+ #include "src/widgets/capture/notifierbox.h"
+ #include "src/widgets/capture/ocrpanel.h"
++#include "src/widgets/capture/pretoolbar.h"
++#include "src/widgets/panel/colorgrabwidget.h"
++#include "src/config/configwindow.h"
+ #include "src/widgets/capture/overlaymessage.h"
+ #include "src/widgets/orientablepushbutton.h"
+ #include "src/widgets/panel/sidepanelwidget.h"
+@@ -36,11 +43,20 @@
+ #include <QPainter>
+ #include <QScreen>
+ #include <QShortcut>
++#include <QClipboard>
++#include <QEventLoop>
++#include <QMimeData>
++#include <QInputMethodEvent>
++#include <QLabel>
++#include <QToolButton>
++#include <QPropertyAnimation>
++#include <QToolTip>
++#include <QVariantAnimation>
++#include <cstdio>
++#include <functional>
++#include <memory>
+ #include <QImage>
+-#include <QProcess>
+-#include <QRegularExpression>
+-#include <QStandardPaths>
+-#include <QTemporaryFile>
++#include <QWindow>
+ #include <draggablewidgetmaker.h>
+ 
+ #if !defined(DISABLE_UPDATE_CHECKER)
+@@ -294,6 +310,80 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
+ 
+     updateCursor();
+ 
++    // flameshot-ocr: Win11 风格预选区悬浮工具条
++    m_preToolbar = new PreToolbar(this);
++    connect(m_preToolbar,
++            &PreToolbar::selectModeRequested,
++            this,
++            [this]() {
++                if (m_activeButton) {
++                    uncheckActiveTool();
++                }
++                if (m_eraserActive) {
++                    m_eraserActive = false;
++                    m_preToolbar->setEraserChecked(false);
++                }
++                m_preToolbar->setToolChecked(CaptureTool::NONE);
++                updatePreToolbar();
++            });
++    connect(m_preToolbar,
++            &PreToolbar::toolRequested,
++            this,
++            &CaptureWidget::onPreToolbarToolRequested);
++    connect(m_preToolbar,
++            &PreToolbar::drawColorChanged,
++            this,
++            &CaptureWidget::setDrawColor);
++    connect(m_preToolbar,
++            &PreToolbar::colorGrabRequested,
++            this,
++            &CaptureWidget::openColorGrab);
++    connect(m_preToolbar,
++            &PreToolbar::fullscreenCopyRequested,
++            this,
++            &CaptureWidget::fullscreenCopy);
++    connect(m_preToolbar,
++            &PreToolbar::saveRequested,
++            this,
++            &CaptureWidget::saveFullCapture);
++    connect(m_preToolbar,
++            &PreToolbar::settingsRequested,
++            this,
++            &CaptureWidget::openSettings);
++    connect(m_preToolbar,
++            &PreToolbar::undoRequested,
++            this,
++            &CaptureWidget::undo);
++    // 形状填充开关切换后重绘（矩形/椭圆渲染时读取该配置）
++    connect(m_preToolbar, &PreToolbar::fillToggled, this, [this]() {
++        drawToolsData();
++        update();
++    });
++    connect(m_preToolbar,
++            &PreToolbar::redoRequested,
++            this,
++            &CaptureWidget::redo);
++    connect(m_preToolbar,
++            &PreToolbar::eraserRequested,
++            this,
++            [this]() {
++                m_eraserActive = !m_eraserActive;
++                if (m_eraserActive && m_activeButton) {
++                    // 橡皮擦与绘制工具互斥
++                    m_activeButton = nullptr;
++                    releaseActiveTool();
++                }
++                if (m_eraserActive && m_panel->activeLayerIndex() >= 0) {
++                    // 橡皮擦与对象选中态互斥（选中会让拖动变成移动）
++                    m_panel->setActiveLayer(-1);
++                }
++                updateSelectionState();
++                updateCursor();
++                m_preToolbar->setEraserChecked(m_eraserActive);
++            });
++    m_preToolbar->show();
++    positionPreToolbar();
++
+     // flameshot-ocr: automated test hook — run OCR shortly after the GUI shows.
+     // FLAMESHOT_OCR_AUTOTEST=1: whole-screen OCR; =2: half-screen selection
+     // first (so the tool button bar is visible), then OCR.
+@@ -315,6 +405,12 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
+             runOcr();
+         });
+     }
++
++    // flameshot-ocr: 状态机自测 —— 用合成鼠标事件驱动真实处理器，
++    // 运行时验证「自动收笔/点击选中/角点缩放/Esc 确认」
++    if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
++        QTimer::singleShot(1500, this, &CaptureWidget::runSelfTest);
++    }
+ }
+ 
+ CaptureWidget::~CaptureWidget()
+@@ -396,6 +492,7 @@ void CaptureWidget::initButtons()
+         }
+ 
+         m_tools[t] = b->tool();
++        m_buttonsByType[t] = b;
+ 
+         connect(b->tool(),
+                 &CaptureTool::requestAction,
+@@ -473,6 +570,952 @@ void CaptureWidget::startColorGrab()
+     }
+ }
+ 
++// flameshot-ocr: 预选区悬浮工具条 —— 显隐与位置
++void CaptureWidget::updatePreToolbar()
++{
++    if (!m_preToolbar) {
++        return;
++    }
++    const bool grabbing = m_colorGrabber && m_colorGrabber->isVisible();
++    const bool show =
++      !m_selection->isVisible() && !m_mouseIsClicked && !grabbing;
++    m_preToolbar->setVisible(show);
++    if (show) {
++        positionPreToolbar();
++    }
++}
++
++void CaptureWidget::positionPreToolbar()
++{
++    if (!m_preToolbar) {
++        return;
++    }
++    m_preToolbar->adjustSize();
++    const QSize size = m_preToolbar->size();
++    m_preToolbar->move(qMax(0, (width() - size.width()) / 2), 12);
++}
++
++// flameshot-ocr: 预工具条按钮处理 ——
++// 再次点击已选中的工具 = 取消选中（回到框选态）；点击其它工具自动切换
++void CaptureWidget::onPreToolbarToolRequested(CaptureTool::Type type)
++{
++    if (m_activeButton && activeButtonToolType() == type) {
++        uncheckActiveTool();
++        m_preToolbar->setToolChecked(CaptureTool::NONE);
++        return;
++    }
++    // 选工具时退出橡皮擦模式（两者互斥）
++    if (m_eraserActive) {
++        m_eraserActive = false;
++        m_preToolbar->setEraserChecked(false);
++    }
++    if (auto* button = m_buttonsByType.value(type)) {
++        setState(button);
++    }
++    m_preToolbar->setToolChecked(type);
++}
++
++// flameshot-ocr: 取色（按 colorPickFormat 自动复制）
++void CaptureWidget::openColorGrab()
++{
++    if (m_colorGrabber) {
++        return;
++    }
++    m_preToolbar->hide();
++    m_colorGrabber = new ColorGrabWidget(&m_context.origScreenshot, this);
++    connect(m_colorGrabber,
++            &ColorGrabWidget::colorGrabbed,
++            this,
++            &CaptureWidget::onColorGrabbed);
++    connect(m_colorGrabber,
++            &ColorGrabWidget::grabAborted,
++            this,
++            &CaptureWidget::onColorGrabAborted);
++    m_colorGrabber->startGrabbing();
++}
++
++void CaptureWidget::onColorGrabbed()
++{
++    if (!m_colorGrabber) {
++        return;
++    }
++    const QColor color = m_colorGrabber->color();
++    m_colorGrabber->deleteLater();
++    m_colorGrabber = nullptr;
++
++    QString text;
++    if (ConfigHandler().colorPickFormat() == QLatin1String("rgb")) {
++        text = QStringLiteral("%1, %2, %3")
++                 .arg(color.red())
++                 .arg(color.green())
++                 .arg(color.blue());
++    } else {
++        text = color.name(QColor::HexRgb);
++    }
++    QApplication::clipboard()->setText(text);
++    QToolTip::showText(mapToGlobal(m_context.mousePos),
++                       OcrPanel::tr2("已复制颜色：", "Copied color: ") + text,
++                       this);
++    updatePreToolbar();
++}
++
++void CaptureWidget::onColorGrabAborted()
++{
++    if (m_colorGrabber) {
++        m_colorGrabber->deleteLater();
++        m_colorGrabber = nullptr;
++    }
++    updatePreToolbar();
++}
++
++// flameshot-ocr: 合成鼠标事件自测（FLAMESHOT_OCR_SELFTEST=1）
++void CaptureWidget::synthMousePress(const QPoint& pos)
++{
++    QMouseEvent press(QEvent::MouseButtonPress,
++                      QPointF(pos),
++                      QPointF(pos),
++                      Qt::LeftButton,
++                      Qt::LeftButton,
++                      Qt::NoModifier);
++    mousePressEvent(&press);
++}
++
++void CaptureWidget::synthMouseMove(const QPoint& pos)
++{
++    QMouseEvent move(QEvent::MouseMove,
++                     QPointF(pos),
++                     QPointF(pos),
++                     Qt::NoButton,
++                     Qt::LeftButton,
++                     Qt::NoModifier);
++    mouseMoveEvent(&move);
++}
++
++void CaptureWidget::synthMouseRelease(const QPoint& pos)
++{
++    QMouseEvent release(QEvent::MouseButtonRelease,
++                        QPointF(pos),
++                        QPointF(pos),
++                        Qt::LeftButton,
++                        Qt::NoButton,
++                        Qt::NoModifier);
++    mouseReleaseEvent(&release);
++}
++
++void CaptureWidget::runSelfTest()
++{
++    // ① 免选区画笔画一笔 → 应自动收笔
++    setState(m_buttonsByType.value(CaptureTool::TYPE_PENCIL));
++    synthMousePress(QPoint(300, 300));
++    synthMouseMove(QPoint(350, 340));
++    synthMouseMove(QPoint(400, 380));
++    synthMouseRelease(QPoint(400, 380));
++    qWarning() << "SELFTEST 3a tool-stays-armed:"
++               << (m_activeButton != nullptr ? "PASS" : "FAIL")
++               << "cursor:" << cursor().shape();
++
++    // ② 点击笔迹 → 对象被选中，光标应为移动
++    synthMousePress(QPoint(350, 340));
++    const bool selected = m_panel->activeLayerIndex() >= 0;
++    qWarning() << "SELFTEST 3b click-select:"
++               << (selected ? "PASS" : "FAIL")
++               << "cursor:" << cursor().shape();
++
++    // ③ 角点命中测试
++    auto object = activeToolObject();
++    const QRect before =
++      object ? object->boundingRect().normalized() : QRect();
++    const QPoint corner = before.topLeft();
++    const int handle = objectResizeHandleAt(corner);
++    qWarning() << "SELFTEST 3c handle-hit:"
++               << (handle > 0 ? "PASS" : "FAIL") << "handle:" << handle
++               << "rect:" << before;
++
++    // 缩放自测段：固定到 50% 灵敏度以保证确定性，结束后恢复用户配置
++    const int savedResizeSensitivity = ConfigHandler().resizeSensitivity();
++    ConfigHandler().setResizeSensitivity(50);
++
++    // ④ 拖左上角向左上 → 包围盒应变大
++    synthMousePress(corner);
++    synthMouseMove(corner - QPoint(60, 60));
++    synthMouseRelease(corner - QPoint(60, 60));
++    const QRect after =
++      activeToolObject() ? activeToolObject()->boundingRect().normalized()
++                         : QRect();
++    qWarning() << "SELFTEST 3d resize:"
++               << (!after.isNull() && after.width() > before.width() &&
++                         after.height() > before.height()
++                     ? "PASS"
++                     : "FAIL")
++               << before << "->" << after;
++
++    // 3e-3g: 矩形/椭圆双向缩放（含从框外沿抓取，复现用户报告的问题）
++    auto lastRect = [this]() {
++        if (m_captureToolObjects.size() <= 0) {
++            return QRect();
++        }
++        auto object = m_captureToolObjects.at(m_captureToolObjects.size() - 1);
++        return object ? object->boundingRect().normalized() : QRect();
++    };
++
++    setState(m_buttonsByType.value(CaptureTool::TYPE_RECTANGLE));
++    synthMousePress(QPoint(700, 260));
++    synthMouseMove(QPoint(850, 360));
++    synthMouseRelease(QPoint(850, 360));
++    const QRect rectBefore = lastRect();
++    // 放大：从右边缘框外 3px 起拖，向右 60px
++    synthMousePress(QPoint(rectBefore.right() + 3, rectBefore.center().y()));
++    synthMouseMove(QPoint(rectBefore.right() + 63, rectBefore.center().y()));
++    synthMouseRelease(QPoint(rectBefore.right() + 63, rectBefore.center().y()));
++    const QRect rectWide = lastRect();
++    qWarning() << "SELFTEST 3e rect-enlarge-from-outside:"
++               << (rectWide.width() > rectBefore.width() ? "PASS" : "FAIL")
++               << rectBefore << "->" << rectWide;
++
++    // 缩小：从右下角框外 2px 起拖，向左上
++    synthMousePress(rectWide.bottomRight() + QPoint(2, 2));
++    synthMouseMove(rectWide.bottomRight() - QPoint(40, 30));
++    synthMouseRelease(rectWide.bottomRight() - QPoint(40, 30));
++    const QRect rectSmaller = lastRect();
++    qWarning() << "SELFTEST 3f rect-shrink-from-outside:"
++               << ((rectSmaller.width() < rectWide.width() &&
++                    rectSmaller.height() < rectWide.height())
++                     ? "PASS"
++                     : "FAIL")
++               << rectWide << "->" << rectSmaller;
++
++    // 3g: 椭圆放大（右边缘框外 3px 起拖）
++    setState(m_buttonsByType.value(CaptureTool::TYPE_CIRCLE));
++    synthMousePress(QPoint(700, 480));
++    synthMouseMove(QPoint(820, 560));
++    synthMouseRelease(QPoint(820, 560));
++    const QRect ellipseBefore = lastRect();
++    synthMousePress(
++      QPoint(ellipseBefore.right() + 3, ellipseBefore.center().y()));
++    synthMouseMove(
++      QPoint(ellipseBefore.right() + 63, ellipseBefore.center().y()));
++    synthMouseRelease(
++      QPoint(ellipseBefore.right() + 63, ellipseBefore.center().y()));
++    const QRect ellipseAfter = lastRect();
++    qWarning() << "SELFTEST 3g ellipse-enlarge-from-outside:"
++               << (ellipseAfter.width() > ellipseBefore.width() ? "PASS"
++                                                                : "FAIL")
++               << ellipseBefore << "->" << ellipseAfter;
++
++    // 3h: 空心矩形内部按压拖动 → 整体平移（修复“方框不能拖动”）
++    setState(m_buttonsByType.value(CaptureTool::TYPE_RECTANGLE));
++    synthMousePress(QPoint(400, 700));
++    synthMouseMove(QPoint(520, 780));
++    synthMouseRelease(QPoint(520, 780));
++    const QRect mvBefore = lastRect();
++    const QPoint mvCenter = mvBefore.center();
++    synthMousePress(mvCenter);
++    synthMouseMove(mvCenter + QPoint(20, 15));
++    synthMouseMove(mvCenter + QPoint(80, 60));
++    synthMouseMove(mvCenter + QPoint(120, 90));
++    synthMouseRelease(mvCenter + QPoint(120, 90));
++    const QRect mvAfter = lastRect();
++    const QPoint shift = mvAfter.topLeft() - mvBefore.topLeft();
++    qWarning() << "SELFTEST 3h rect-move-by-interior-drag:"
++               << ((shift.manhattanLength() >= 50 &&
++                    qAbs(mvAfter.width() - mvBefore.width()) <= 2 &&
++                    qAbs(mvAfter.height() - mvBefore.height()) <= 2)
++                     ? "PASS"
++                     : "FAIL")
++               << mvBefore << "->" << mvAfter << "shift:" << shift;
++
++    // 3i: 自适应增益 —— 慢速微拖精调（慢速增益），快速拖动 1:1 跟手
++    {
++        const int sensitivity =
++          qBound(1, ConfigHandler().resizeSensitivity(), 100);
++        const qreal slowGain = sensitivity / 100.0;
++        const QRect gainBefore = lastRect();
++        synthMousePress(
++          QPoint(gainBefore.right() + 3, gainBefore.center().y()));
++        // 20 次 2px 微小移动（慢速 → 精调增益）
++        for (int i = 1; i <= 20; ++i) {
++            synthMouseMove(QPoint(gainBefore.right() + 3 + i * 2,
++                                  gainBefore.center().y()));
++        }
++        // 一次 100px 大幅移动（快速 → 1:1 跟手）
++        synthMouseMove(QPoint(gainBefore.right() + 3 + 140,
++                              gainBefore.center().y()));
++        synthMouseRelease(QPoint(gainBefore.right() + 3 + 140,
++                                 gainBefore.center().y()));
++        const QRect gainAfter = lastRect();
++        const int expected =
++          100 + qRound(20 * 2 * slowGain); // 快段 100px + 慢段 40px×慢增益
++        const int actual = gainAfter.width() - gainBefore.width();
++        qWarning() << "SELFTEST 3i adaptive-gain:"
++                   << (qAbs(actual - expected) <= 8 ? "PASS" : "FAIL")
++                   << "slowGain:" << slowGain << "expected~" << expected
++                   << "actual:" << actual;
++    }
++    // 恢复用户配置的灵敏度
++    ConfigHandler().setResizeSensitivity(savedResizeSensitivity);
++
++    // 3j: 工具按钮再点一次 → 取消选中（走生产处理函数）
++    {
++        onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
++        const bool armed = (m_activeButton != nullptr);
++        onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
++        const bool disarmed = (m_activeButton == nullptr);
++        qWarning() << "SELFTEST 3j tool-toggle-off:"
++                   << ((armed && disarmed) ? "PASS" : "FAIL")
++                   << "armed:" << armed << "afterSecondClick:" << disarmed;
++    }
++
++    // ⑤ 选区尺寸标签渲染验证（实心深底 + 白字，可读性）
++    {
++        // 取色放大镜：startGrabbing 后无需移动鼠标即应可见
++        ColorGrabWidget grabber(&m_context.origScreenshot, this);
++        grabber.startGrabbing();
++        qWarning() << "SELFTEST 2 magnifier-visible:"
++                   << (grabber.isVisible() ? "PASS" : "FAIL");
++        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
++        QApplication::sendEvent(qApp, &esc);
++    }
++
++    m_selection->show();
++    const QRect selRect(rect().width() * 0.25, rect().height() * 0.25,
++                        rect().width() * 0.4, rect().height() * 0.3);
++    m_selection->setGeometry(selRect);
++    emit m_selection->geometrySettled();
++    m_context.selection = selRect;
++    showxywh();
++    repaint();
++    {
++        const qreal scale = m_context.screenshot.devicePixelRatio();
++        QFont boxFont = font();
++        const QFontMetrics boxMetrics(boxFont);
++        const QString text =
++          QStringLiteral("%1 × %2 px")
++            .arg(QString::number(int(selRect.width() * scale)),
++                 QString::number(int(selRect.height() * scale)));
++        QRect box = boxMetrics.boundingRect(text);
++        box.adjust(0, 0, 10, 12);
++        const QRect labelRect(selRect.left(), selRect.top() - box.height() - 6,
++                              box.width(), box.height());
++        const QImage grabbed = grab(labelRect.adjusted(-15, -15, 45, 45))
++                                 .toImage();
++        grabbed.save(QStringLiteral("/tmp/label_grab.png"));
++        int darkPixels = 0;
++        int whitePixels = 0;
++        for (int y = 0; y < grabbed.height(); ++y) {
++            for (int x = 0; x < grabbed.width(); ++x) {
++                const QColor c = grabbed.pixelColor(x, y);
++                if (c.red() < 70 && c.green() < 70 && c.blue() < 90) {
++                    ++darkPixels;
++                } else if (c.red() > 225 && c.green() > 225 &&
++                           c.blue() > 225) {
++                    ++whitePixels;
++                }
++            }
++        }
++        qWarning() << "SELFTEST 4 label-render:"
++                   << ((darkPixels > 100 && whitePixels > 20) ? "PASS"
++                                                              : "FAIL")
++                   << "dark:" << darkPixels << "white:" << whitePixels;
++    }
++
++    // ⑥ 钉图：工具条可见 + 滚轮双向缩放 + 复制含图
++    {
++        const QPixmap pinSource = m_context.origScreenshot.scaled(
++          400, 300, Qt::KeepAspectRatio, Qt::FastTransformation);
++        // 先归零配置（防上一轮测试把 true 写进 ini 造成断言污染）
++        ConfigHandler().setPinShowToolbar(false);
++        auto* pin = new PinWidget(pinSource, QRect(150, 150, 400, 300));
++        pin->show();
++        for (int i = 0; i < 5; ++i) {
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++        }
++        auto* toolBar = pin->findChild<QWidget*>(QStringLiteral("pinToolBar"));
++        // 默认隐藏
++        const bool defaultHidden = toolBar && !toolBar->isVisible();
++        qWarning() << "SELFTEST 5 pin-toolbar-default-hidden:"
++                   << (defaultHidden ? "PASS" : "FAIL");
++        // 开启后应具有真实尺寸（仅 isVisible() 会放过“未加入布局的 0 尺寸控件”）
++        ConfigHandler().setPinShowToolbar(true);
++        auto* pin2 = new PinWidget(pinSource, QRect(150, 150, 400, 300));
++        pin2->show();
++        for (int i = 0; i < 5; ++i) {
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++        }
++        auto* toolBar2 =
++          pin2->findChild<QWidget*>(QStringLiteral("pinToolBar"));
++        const bool toolBarOk = toolBar2 && toolBar2->isVisible() &&
++                               toolBar2->width() > 150 && toolBar2->height() > 12;
++        qWarning() << "SELFTEST 5 pin-toolbar-toggle:"
++                   << (toolBarOk ? "PASS" : "FAIL")
++                   << "size:" << (toolBar2 ? toolBar2->size() : QSize());
++        ConfigHandler().setPinShowToolbar(false);
++
++        const int baseHeight = pin->height();
++        for (int i = 0; i < 3; ++i) {
++            QWheelEvent up(QPointF(200, 200), QPointF(200, 200), QPoint(0, 0),
++                           QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
++                           Qt::NoScrollPhase, false);
++            QApplication::sendEvent(pin, &up);
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++        }
++        pin->grab();
++        const int upHeight = pin->height();
++        for (int i = 0; i < 6; ++i) {
++            QWheelEvent down(QPointF(200, 200), QPointF(200, 200),
++                             QPoint(0, 0), QPoint(0, -120), Qt::NoButton,
++                             Qt::NoModifier, Qt::NoScrollPhase, false);
++            QApplication::sendEvent(pin, &down);
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++        }
++        pin->grab();
++        const int downHeight = pin->height();
++        qWarning() << "SELFTEST 4 wheel-zoom:"
++                   << ((upHeight > baseHeight && downHeight < upHeight)
++                         ? "PASS"
++                         : "FAIL")
++                   << "base:" << baseHeight << "up:" << upHeight
++                   << "down:" << downHeight;
++
++        pin->copyToClipboard();
++        bool hasImage = false;
++        QStringList clipboardFormats;
++        for (int i = 0; i < 30 && !hasImage; ++i) {
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            const QMimeData* mime = QGuiApplication::clipboard()->mimeData();
++            hasImage = mime && mime->hasImage();
++            if (!hasImage && mime) {
++                clipboardFormats = mime->formats();
++            }
++        }
++        qWarning() << "SELFTEST 5 pin-copy:"
++                   << ((hasImage || clipboardFormats.contains(
++                                          QStringLiteral("image/png")))
++                         ? "PASS"
++                         : "FAIL")
++                   << clipboardFormats;
++        // 注意：测试中不关闭 pin —— 在合成流程里 close 会触发应用的
++        // captureFailed→exit 机制，打断后续嵌套事件循环测试；
++        // 生产流程中钉图是“先关截图窗再钉”，不存在此路径。
++
++        // 10: 钉图标注引擎实证 —— 画矩形 → 清空（闪退金丝雀）→ 再画 → 撤销
++        {
++            // 先归零配置（前序测试曾把 true 写进 ini 造成断言污染）
++            ConfigHandler().setPinShowToolbar(false);
++            auto* annotator = pin2->findChild<PinAnnotator*>();
++            qWarning() << "SELFTEST 10 pin-annotator-found:"
++                       << (annotator ? "PASS" : "FAIL")
++                       << "geo:" << (annotator ? annotator->geometry() : QRect())
++                       << "viewGeo:" << pin2->viewWidget()->geometry();
++            auto annoPress = [&](const QPoint& p) {
++                QMouseEvent ev(QEvent::MouseButtonPress, QPointF(p),
++                               QPointF(p), Qt::LeftButton, Qt::LeftButton,
++                               Qt::NoModifier);
++                QApplication::sendEvent(annotator, &ev);
++            };
++            auto annoMove = [&](const QPoint& p) {
++                QMouseEvent ev(QEvent::MouseMove, QPointF(p), QPointF(p),
++                               Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
++                QApplication::sendEvent(annotator, &ev);
++            };
++            auto annoRelease = [&](const QPoint& p) {
++                QMouseEvent ev(QEvent::MouseButtonRelease, QPointF(p),
++                               QPointF(p), Qt::LeftButton, Qt::NoButton,
++                               Qt::NoModifier);
++                QApplication::sendEvent(annotator, &ev);
++            };
++            // 选矩形工具（走工具条按钮的生产路径）
++            QToolButton* rectBtn = nullptr;
++            const auto buttons = toolBar2->findChildren<QToolButton*>();
++            for (auto* b : buttons) {
++                if (b->toolTip().contains(
++                      OcrPanel::tr2("矩形", "Rectangle"))) {
++                    rectBtn = b;
++                }
++            }
++            qWarning() << "SELFTEST 10 pin-rect-btn-found:"
++                       << (rectBtn ? "PASS" : "FAIL");
++            if (rectBtn) {
++                rectBtn->click();
++            }
++            annoPress(QPoint(60, 60));
++            annoMove(QPoint(160, 130));
++            annoRelease(QPoint(160, 130));
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            qWarning() << "SELFTEST 10 pin-rect-drawn:"
++                       << ((annotator && annotator->hasShapes()) ? "PASS"
++                                                                  : "FAIL");
++            // 清空（用户报告的闪退点）—— 崩溃则测试进程直接终止
++            annotator->clearShapes();
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            qWarning() << "SELFTEST 10 pin-clear-survived:"
++                       << ((!annotator->hasShapes()) ? "PASS" : "FAIL");
++            // 再画一笔并撤销
++            annoPress(QPoint(200, 200));
++            annoMove(QPoint(260, 250));
++            annoRelease(QPoint(260, 250));
++            annotator->undo();
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            qWarning() << "SELFTEST 10 pin-undo:"
++                       << ((!annotator->hasShapes()) ? "PASS" : "FAIL");
++
++            // 12-15: 钉图新工具 —— 文字 / 序号 / 橡皮擦 / 重做
++            fflush(stderr);
++
++            // 12: 文字工具 —— 放置 + 键入 + 回车提交
++            annotator->setTool(PinAnnotator::Text);
++            annoPress(QPoint(80, 80));
++            const std::initializer_list<std::pair<Qt::Key, QString>> keys = {
++                { Qt::Key_H, QStringLiteral("H") },
++                { Qt::Key_I, QStringLiteral("i") },
++            };
++            for (const auto& k : keys) {
++                QKeyEvent keyEv(QEvent::KeyPress, k.first, Qt::NoModifier,
++                                k.second);
++                QApplication::sendEvent(annotator, &keyEv);
++            }
++            QKeyEvent enterEv(QEvent::KeyPress, Qt::Key_Return,
++                              Qt::NoModifier);
++            QApplication::sendEvent(annotator, &enterEv);
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            const int afterText = annotator->shapeCount();
++            qWarning() << "SELFTEST 12 pin-text:" << (afterText >= 1 ? "PASS" : "FAIL")
++                       << "shapes:" << afterText;
++
++            // 13: 序号工具 —— 点击放置递增编号
++            annotator->setTool(PinAnnotator::Number);
++            annoPress(QPoint(300, 80));
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            const int afterNumber = annotator->shapeCount();
++            qWarning() << "SELFTEST 13 pin-number:"
++                       << (afterNumber == afterText + 1 ? "PASS" : "FAIL")
++                       << afterText << "->" << afterNumber;
++
++            // 14: 橡皮擦 —— 点击文字包围盒删除
++            annotator->setTool(PinAnnotator::Eraser);
++            annoPress(QPoint(90, 95));
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            const int afterErase = annotator->shapeCount();
++            qWarning() << "SELFTEST 14 pin-eraser:"
++                       << (afterErase == afterNumber - 1 ? "PASS" : "FAIL")
++                       << afterNumber << "->" << afterErase;
++
++            // 15: 重做 —— 撤销再重做，形状数恢复
++            annotator->undo();
++            const int afterUndo = annotator->shapeCount();
++            annotator->redo();
++            const int afterRedo = annotator->shapeCount();
++            qWarning() << "SELFTEST 15 pin-redo:"
++                       << (afterUndo == afterErase - 1 &&
++                                 afterRedo == afterUndo + 1
++                             ? "PASS"
++                             : "FAIL")
++                       << afterErase << "-> undo" << afterUndo << "-> redo"
++                       << afterRedo;
++
++            // 16: displayScale 含 DPR（125% 屏应 ≈1.25，修复坐标偏移）
++            {
++                const QPixmap labelPix = pin2->viewPixmap();
++                qWarning() << "GEODBG pin2 size:" << pin2->size()
++                           << "view:" << pin2->viewWidget()->size()
++                           << "pixmap:" << labelPix.size()
++                           << "dpr:" << labelPix.devicePixelRatio();
++            }
++            qWarning() << "SELFTEST 16 pin-displayscale:"
++                       << (qAbs(annotator->displayScale() - 1.25) < 0.01
++                             ? "PASS"
++                             : "FAIL")
++                       << annotator->displayScale();
++
++            // 17: 填充开关 —— 描边矩形中心透明，填充后不透明
++            annotator->setTool(PinAnnotator::Rectangle);
++            // base 图 raw 500x375（displayScale=1.25）：
++            // annotator (200,80)-(360,160) → base (250,100)-(450,200)
++            annoPress(QPoint(200, 80));
++            annoMove(QPoint(360, 160));
++            annoRelease(QPoint(360, 160));
++            {
++                const QImage outlineImg =
++                  annotator->renderToImage(pin2->viewPixmap().size());
++                const QColor center1 =
++                  outlineImg.pixelColor(QPoint(350, 150));
++                annotator->setFill(true);
++                const QImage filledImg =
++                  annotator->renderToImage(pin2->viewPixmap().size());
++                const QColor center2 =
++                  filledImg.pixelColor(QPoint(350, 150));
++                annotator->setFill(false);
++                qWarning() << "SELFTEST 17 pin-fill:"
++                           << (center1.alpha() == 0 && center2.alpha() > 0
++                                 ? "PASS"
++                                 : "FAIL")
++                           << "outline:" << center1.alpha()
++                           << "filled:" << center2.alpha();
++            }
++
++            // 18: 马赛克 —— 采样底图像素化，合成图与原区域不同
++            annotator->setTool(PinAnnotator::Pixelate);
++            // annotator (60,200)-(200,260) → base (75,250)-(250,325)，图内
++            annoPress(QPoint(60, 200));
++            annoMove(QPoint(200, 260));
++            annoRelease(QPoint(200, 260));
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            {
++                const QImage base =
++                  pin2->viewPixmap().toImage();
++                const QImage composited =
++                  annotator->renderToImage(base.size());
++                bool differs = false;
++                for (int y = 260; y < 315 && !differs; y += 5) {
++                    for (int x = 85; x < 240; x += 10) {
++                        if (base.pixelColor(x, y) !=
++                            composited.pixelColor(x, y)) {
++                            differs = true;
++                            break;
++                        }
++                    }
++                }
++                qWarning() << "SELFTEST 18 pin-pixelate:"
++                           << (annotator->hasShapes() && differs ? "PASS"
++                                                                 : "FAIL");
++            }
++
++            // 19: 输入法 —— commitString 提交中文
++            annotator->setTool(PinAnnotator::Text);
++            annoPress(QPoint(80, 430));
++            QKeyEvent imeStart(QEvent::KeyPress, Qt::Key_Space,
++                               Qt::NoModifier);
++            QApplication::sendEvent(annotator, &imeStart);
++            QInputMethodEvent ime;
++            ime.setCommitString(QStringLiteral("中文"));
++            QApplication::sendEvent(annotator, &ime);
++            QApplication::sendEvent(annotator, &enterEv);
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            qWarning() << "SELFTEST 19 pin-ime:"
++                       << ((annotator->lastShapeText() ==
++                              QStringLiteral("中文"))
++                             ? "PASS"
++                             : "FAIL")
++                       << annotator->lastShapeText();
++
++            // 20: Ctrl+滚轮 —— 透明度变化 + 中央提示
++            {
++                const qreal opBefore = pin2->pinOpacity();
++                QWheelEvent ctrlWheel(
++                  QPointF(200, 200), QPointF(200, 200), QPoint(0, 0),
++                  QPoint(0, -120), Qt::NoButton, Qt::ControlModifier,
++                  Qt::NoScrollPhase, false);
++                QApplication::sendEvent(pin2, &ctrlWheel);
++                QApplication::processEvents(QEventLoop::AllEvents, 50);
++                const qreal opAfter = pin2->pinOpacity();
++                auto* toast = pin2->findChild<QLabel*>();
++                bool toastOk = false;
++                const auto labels = pin2->findChildren<QLabel*>();
++                for (auto* l : labels) {
++                    if (l->isVisible() &&
++                        l->text().contains(
++                          OcrPanel::tr2("透明度", "Opacity"))) {
++                        toastOk = true;
++                    }
++                }
++                qWarning() << "SELFTEST 20 pin-ctrlwheel-opacity:"
++                           << (opAfter < opBefore && toastOk ? "PASS"
++                                                             : "FAIL")
++                           << opBefore << "->" << opAfter
++                           << "toast:" << toastOk;
++                pin2->setWindowOpacity(1.0);
++            }
++
++            // 23: 滚轮缩放提示 —— toast 文本含「缩放」且可见
++            {
++                QWheelEvent zoomWheel(QPointF(200, 200), QPointF(200, 200),
++                                      QPoint(0, 0), QPoint(0, 120),
++                                      Qt::NoButton, Qt::NoModifier,
++                                      Qt::NoScrollPhase, false);
++                QApplication::sendEvent(pin2, &zoomWheel);
++                QApplication::processEvents(QEventLoop::AllEvents, 50);
++                auto* toast = pin2->findChild<QLabel*>();
++                const bool ok = toast && toast->isVisible() &&
++                                toast->text().contains(
++                                  OcrPanel::tr2("缩放", "Zoom"));
++                qWarning() << "SELFTEST 23 zoom-toast:"
++                           << (ok ? "PASS" : "FAIL")
++                           << "text:" << (toast ? toast->text() : QString());
++            }
++
++            // 24: 钉图 OCR 面板 —— 子控件可见且位于钉图矩形内
++            // （自动左右定位生效，不再被 Wayland 丢到图片下方/屏幕外）
++            {
++                pin2->runOcr();
++                QApplication::processEvents(QEventLoop::AllEvents, 100);
++                auto* panel = pin2->findChild<OcrPanel*>();
++                const bool visible = panel && panel->isVisible();
++                const bool inside =
++                  panel && pin2->rect().intersects(panel->geometry()) &&
++                  pin2->rect().contains(panel->geometry().topLeft()) &&
++                  pin2->rect().contains(panel->geometry().bottomRight());
++                qWarning() << "SELFTEST 24 pin-ocr-panel-beside:"
++                           << (visible && inside ? "PASS" : "FAIL")
++                           << "panel:" << (panel ? panel->geometry() : QRect())
++                           << "pin:" << pin2->rect();
++                if (panel) {
++                    panel->hide();
++                }
++            }
++
++            // 清理测试钉图：无父控件的 widget 不随进程退出析构，
++            // 显式销毁以释放其 OCR 子对象（QProcess/QTemporaryFile）
++            pin->deleteLater();
++            pin2->deleteLater();
++            QApplication::processEvents(QEventLoop::AllEvents, 50);
++            fflush(stderr);
++        }
++
++        // 11: 橡皮擦 —— 包围盒命中（空心矩形内部点击即删）
++        {
++            // 画一个空心矩形（默认不填充）
++            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
++            synthMousePress(QPoint(900, 300));
++            synthMouseMove(QPoint(1050, 400));
++            synthMouseRelease(QPoint(1050, 400));
++            const int countBefore = m_captureToolObjects.size();
++            // 进入橡皮擦，点击矩形“内部”（非边框）
++            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE); // 先取消选中
++            handleToolSignal(CaptureTool::REQ_CLEAR_SELECTION);
++            m_eraserActive = true;
++            updateSelectionState();
++            updateCursor();
++            synthMousePress(QPoint(975, 350));
++            synthMouseRelease(QPoint(975, 350));
++            const int countAfter = m_captureToolObjects.size();
++            m_eraserActive = false;
++            updateSelectionState();
++            updateCursor();
++            qWarning() << "SELFTEST 11 eraser-bbox-delete:"
++                       << (countAfter == countBefore - 1 ? "PASS" : "FAIL")
++                       << countBefore << "->" << countAfter;
++        }
++    }
++
++    // 22: 填充开关端到端 —— 点击真实按钮 → 画矩形 → 像素断言
++    {
++        auto* preFill = m_preToolbar->findChild<QToolButton*>(
++          QStringLiteral("preFillBtn"));
++        qWarning() << "SELFTEST 22 fill-btn-found:"
++                   << (preFill ? "PASS" : "FAIL");
++        if (preFill) {
++            // 描边矩形
++            preFill->setChecked(false);
++            emit preFill->toggled(false);
++            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
++            synthMousePress(QPoint(300, 500));
++            synthMouseMove(QPoint(500, 620));
++            synthMouseRelease(QPoint(500, 620));
++            const QImage outlineShot = m_context.screenshot.copy(
++              QRect(300, 500, 200, 120)).toImage();
++            const QColor o = outlineShot.pixelColor(QPoint(100, 60));
++            // 切到填充，再画一个（画笔色 = drawColor，中心应为画笔色）
++            preFill->setChecked(true);
++            emit preFill->toggled(true);
++            // 第二个矩形画在不重叠位置（点到已有形状会被解释为选中）
++            synthMousePress(QPoint(300, 700));
++            synthMouseMove(QPoint(500, 820));
++            synthMouseRelease(QPoint(500, 820));
++            const QImage filledShot = m_context.screenshot.copy(
++              QRect(300, 700, 200, 120)).toImage();
++            const QColor f = filledShot.pixelColor(QPoint(100, 60));
++            const QColor pen = ConfigHandler().drawColor();
++            const bool outlineIsBg =
++              !(o == pen);
++            const bool filledIsPen =
++              (f == pen);
++            qWarning() << "SELFTEST 22 pretoolbar-fill-e2e:"
++                       << (outlineIsBg && filledIsPen ? "PASS" : "FAIL")
++                       << "outline-center:" << o.name()
++                       << "filled-center:" << f.name()
++                       << "pen:" << pen.name();
++            // 恢复
++            preFill->setChecked(false);
++            emit preFill->toggled(false);
++            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
++            onPreToolbarToolRequested(CaptureTool::TYPE_RECTANGLE);
++        }
++    }
++
++    // 21: 滚轮粗细提示圈跟随光标（上游固定在屏幕左上角）。
++    // Wayland 不允许程序移动光标，故验证定位公式=光标位置+偏移，
++    // 且不等于旧的“屏幕左上角+偏移”
++    {
++        const QPoint cursorLocal = mapFromGlobal(QCursor::pos());
++        QWheelEvent wheelEv(QPointF(cursorLocal), QPointF(cursorLocal),
++                            QPoint(0, 0), QPoint(0, 120), Qt::NoButton,
++                            Qt::NoModifier, Qt::NoScrollPhase, false);
++        QApplication::sendEvent(this, &wheelEv);
++        QApplication::processEvents(QEventLoop::AllEvents, 50);
++        const QPoint notifierPos = m_notifierBox->pos();
++        const int offset = m_notifierBox->width() / 4;
++        const QPoint expected = cursorLocal + QPoint(offset, offset);
++        // 定位公式 = 光标位置 + 偏移（上游为屏幕左上角 + 偏移）。
++        // 光标恰在屏幕角时两公式重合，故只断言公式匹配
++        qWarning() << "SELFTEST 21 wheel-notifier-follows-cursor:"
++                   << (notifierPos == expected ? "PASS" : "FAIL")
++                   << "notifier:" << notifierPos << "expected:" << expected;
++        // 视觉留证：提示圈渲染在光标旁（保存提示圈局部截图）
++        if (notifierPos == expected) {
++            const QRect around(notifierPos - QPoint(30, 30), QSize(120, 100));
++            grab(around).save(QStringLiteral("/tmp/notifier_visual.png"));
++        }
++    }
++
++
++    // ⑦ 确认框与「关闭返回悬浮工具条」行为（Esc / ✕ / 钉图三条路径）
++    // 用轮询代替固定延时（消除弹窗出现时机与定时器的竞态）
++    auto runConfirmTest =
++      [this](const char* label,
++             const std::function<void()>& action,
++             bool expectPrompt,
++             const std::function<bool()>& extra = {}) {
++          auto promptShown = std::make_shared<bool>(false);
++          auto* poll = new QTimer(this);
++          poll->setInterval(50);
++          connect(poll,
++                  &QTimer::timeout,
++                  this,
++                  [this, promptShown, poll]() {
++                      if (m_quitPrompt && m_quitPrompt->isVisible()) {
++                          *promptShown = true;
++                          poll->stop();
++                          poll->deleteLater();
++                          m_quitPrompt->done(QMessageBox::No);
++                      }
++                  });
++          poll->start();
++          action();
++          poll->stop();
++          poll->deleteLater();
++          const bool stillOpen = isVisible();
++          const bool extraOk = extra ? extra() : true;
++          const bool pass =
++            (*promptShown == expectPrompt) && stillOpen && extraOk;
++          qWarning() << "SELFTEST" << label << ":" << (pass ? "PASS" : "FAIL")
++                     << "prompt:" << *promptShown << "(expect" << expectPrompt
++                     << ") open:" << stillOpen << "extra:" << extraOk;
++          fflush(stderr);
++      };
++
++    runConfirmTest(
++      "6 esc-confirm",
++      [this]() {
++          // 规范化前置状态（消除前序测试对工具/选区/选中的残留影响），
++          // Esc 直达退出确认。（递增链见测试 8）
++          uncheckActiveTool();
++          m_panel->setActiveLayer(-1);
++          m_selection->hide();
++          deleteToolWidgetOrClose();
++      },
++      true);
++    runConfirmTest("7 exit-button-confirm",
++                   [this]() { handleToolSignal(CaptureTool::REQ_CLOSE_GUI); },
++                   true);
++    // 8: 有选区时“关闭”应取消选区、回到悬浮工具条页（不弹退出确认、保留标注）
++    runConfirmTest(
++      "8 selection-close-to-toolbar",
++      [this]() {
++          m_selection->show();
++          const QRect selRect(
++            rect().width() / 5, rect().height() / 5, 400, 300);
++          m_selection->setGeometry(selRect);
++          m_context.selection = selRect;
++          emit m_selection->geometrySettled();
++          deleteToolWidgetOrClose();
++      },
++      false,
++      [this]() {
++          return !m_selection->isVisible() && m_preToolbar->isVisible() &&
++                 !m_captureToolObjects.captureToolObjects().isEmpty();
++      });
++    // 9: 钉图（任务型关闭）不应弹退出确认 —— 最后执行（正常关闭窗口）
++    {
++        auto pinPrompt = std::make_shared<bool>(false);
++        auto* pinPoll = new QTimer(this);
++        pinPoll->setInterval(50);
++        connect(pinPoll,
++                &QTimer::timeout,
++                this,
++                [this, pinPrompt, pinPoll]() {
++                    if (m_quitPrompt && m_quitPrompt->isVisible()) {
++                        *pinPrompt = true;
++                        pinPoll->stop();
++                        pinPoll->deleteLater();
++                        m_quitPrompt->done(QMessageBox::No);
++                    }
++                });
++        pinPoll->start();
++        m_context.request.addTask(CaptureRequest::PIN);
++        handleToolSignal(CaptureTool::REQ_CLOSE_GUI);
++        pinPoll->stop();
++        qWarning() << "SELFTEST 9 pin-no-prompt:"
++                   << (!*pinPrompt ? "PASS" : "FAIL")
++                   << "prompt:" << *pinPrompt;
++        fflush(stderr);
++    }
++    qWarning() << "SELFTEST: end";
++    fflush(stderr);
++
++    // flameshot-ocr: 自测完毕后优雅退出（关闭所有窗口 → 事件循环自然结束），
++    // 让 LeakSanitizer 在进程退出时输出完整的泄漏报告
++    if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
++        QTimer::singleShot(500, this, [this]() {
++            for (QWidget* widget : QApplication::topLevelWidgets()) {
++                if (widget && widget->isVisible() && widget != this &&
++                    widget->metaObject()->className() ==
++                      QStringLiteral("PinWidget")) {
++                    widget->close();
++                }
++            }
++            close();
++        });
++    }
++}
++
++// flameshot-ocr: 全屏复制 / 全屏保存 / 设置入口（直接导出，不走析构路径）
++void CaptureWidget::fullscreenCopy()
++{
++    if (m_activeTool) {
++        commitCurrentTool();
++    }
++    const QPixmap capture = pixmap();
++    m_captureDone = true;
++    m_context.request = CaptureRequest::GRAPHICAL_MODE;
++    hide();
++    saveToClipboard(capture);
++    close();
++}
++
++void CaptureWidget::saveFullCapture()
++{
++    if (m_activeTool) {
++        commitCurrentTool();
++    }
++    const QPixmap capture = pixmap();
++    m_captureDone = true;
++    m_context.request = CaptureRequest::GRAPHICAL_MODE;
++    hide();
++    saveToFilesystemGUI(capture);
++    close();
++}
++
++void CaptureWidget::openSettings()
++{
++    Flameshot::instance()->config();
++    for (QWidget* widget : QApplication::topLevelWidgets()) {
++        if (auto* configWindow = qobject_cast<ConfigWindow*>(widget)) {
++            configWindow->show();
++            configWindow->raise();
++            configWindow->activateWindow();
++        }
++    }
++}
++
+ void CaptureWidget::showxywh()
+ {
+     m_xywhDisplay = true;
+@@ -568,6 +1611,20 @@ void CaptureWidget::initQuitPrompt()
+     });
+ }
+ 
++void CaptureWidget::resetSelectionToToolbar()
++{
++    // flameshot-ocr: 取消选区并回到预选区悬浮工具条状态（标注全部保留）
++    cancel();
++    m_context.selection = QRect();
++    m_buttonHandler->hide();
++    updateSelectionState();
++    updateCursor();
++    updatePreToolbar();
++    // 整屏重绘：否则选区外的压暗层会以“与选区等大的亮斑”形式残留
++    // （未失效的区域仍显示上一帧的压暗画面）
++    update();
++}
++
+ bool CaptureWidget::promptQuit()
+ {
+     return m_quitPrompt->exec() == QMessageBox::Yes;
+@@ -590,9 +1647,15 @@ void CaptureWidget::deleteToolWidgetOrClose()
+         m_toolWidget = nullptr;
+     } else if (m_colorPicker && m_colorPicker->isVisible()) {
+         m_colorPicker->hide();
++    } else if (m_selection->isVisible()) {
++        // flameshot-ocr: 有选区时先取消选区，回到预选区悬浮工具条页（保留标注）
++        resetSelectionToToolbar();
+     } else {
+         // close CaptureWidget
+-        if (m_config.showQuitPrompt()) {
++        // flameshot-ocr: 已有手绘标注时强制确认，避免误触丢失
++        const bool hasDrawings =
++          !m_captureToolObjects.captureToolObjects().isEmpty();
++        if (hasDrawings || m_config.showQuitPrompt()) {
+             // need to show prompt
+             if (m_quitPrompt->isHidden() && promptQuit()) {
+                 close();
+@@ -702,25 +1765,26 @@ void CaptureWidget::paintEvent(QPaintEvent* paintEvent)
+         QFontMetrics fm = painter.fontMetrics();
+ 
+         QString xy =
+-          QString("%1x%2+%3+%4")
++          QStringLiteral("%1 × %2 px")
+             .arg(QString::number(static_cast<int>(selection.width() * scale)),
+-                 QString::number(static_cast<int>(selection.height() * scale)),
+-                 QString::number(static_cast<int>(selection.left() * scale)),
+-                 QString::number(static_cast<int>(selection.top() * scale)));
++                 QString::number(static_cast<int>(selection.height() * scale)));
+ 
+         xybox = fm.boundingRect(xy);
+         // the small numbers here are just margins so the text doesn't
+         // smack right up to the box; they aren't critical and the box
+         // size itself is tied to the font metrics
+         xybox.adjust(0, 0, 10, 12);
+-        // in anticipation of making the position adjustable
+         int x0, y0;
+         // Move these to header
+ 
+         switch (position) {
+             case GeneralConf::xywh_top_left:
++                // 左上角：贴在选区外上方，空间不足时退到选区内侧
+                 x0 = selection.left();
+-                y0 = selection.top();
++                y0 = selection.top() - xybox.height() - 6;
++                if (y0 < 0) {
++                    y0 = selection.top() + 6;
++                }
+                 break;
+             case GeneralConf::xywh_bottom_left:
+                 x0 = selection.left();
+@@ -741,12 +1805,18 @@ void CaptureWidget::paintEvent(QPaintEvent* paintEvent)
+                   selection.top() + (selection.height() - xybox.height()) / 2;
+         }
+ 
+-        QColor uicolor = ConfigHandler().uiColor();
+-        uicolor.setAlpha(200);
+-        painter.fillRect(
+-          x0, y0, xybox.width(), xybox.height(), QBrush(uicolor));
+-        painter.setPen(ColorUtils::colorIsDark(uicolor) ? Qt::white
+-                                                        : Qt::black);
++        // flameshot-ocr: 实心深色底 + UI 色描边 + 白色粗体，任何背景下清晰可读
++        painter.fillRect(x0,
++                         y0,
++                         xybox.width(),
++                         xybox.height(),
++                         QColor(20, 20, 24, 245));
++        painter.setPen(QPen(ConfigHandler().uiColor(), 1));
++        painter.drawRect(x0, y0, xybox.width() - 1, xybox.height() - 1);
++        QFont xyFont = painter.font();
++        xyFont.setBold(true);
++        painter.setFont(xyFont);
++        painter.setPen(Qt::white);
+         painter.drawText(x0,
+                          y0,
+                          xybox.width(),
+@@ -893,7 +1963,31 @@ int CaptureWidget::selectToolItemAtPos(const QPoint& pos)
+ void CaptureWidget::mousePressEvent(QMouseEvent* e)
+ {
+     activateWindow();
++    if (m_preToolbar && m_preToolbar->isVisible()) {
++        m_preToolbar->hide();
++    }
++    // flameshot-ocr: 橡皮擦模式 —— 点击标注直接删除
++    if (m_eraserActive && e->button() == Qt::LeftButton) {
++        // flameshot-ocr: 包围盒优先命中（空心矩形/椭圆内部无绘制像素，
++        // find() 点中间会落空），线状笔画退回像素级命中
++        int index = objectIndexContainingPoint(e->pos());
++        if (index < 0) {
++            index = m_captureToolObjects.find(e->pos(), size());
++        }
++        if (index >= 0) {
++            m_captureToolObjectsBackup = m_captureToolObjects;
++            m_captureToolObjects.removeAt(index);
++            pushObjectsStateToUndoStack();
++            drawToolsData();
++        }
++        e->accept();
++        return;
++    }
+     if (m_ocrPanel && m_ocrPanel->isVisible()) {
++        if (m_ocrPanel->geometry().contains(e->pos())) {
++            // 面板区域的事件应由面板处理，兜底防止隐藏面板/触发取色器
++            return;
++        }
+         m_ocrPanel->hide();
+     }
+     m_startMove = false;
+@@ -904,6 +1998,64 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
+         updateCursor();
+         return;
+     }
++
++    // flameshot-ocr: 免选区连续绘制 —— 工具保持激活，点到已有形状则收起
++    // 工具（下方缩放/选中流程随之接管：可拖动/缩放），点到空白继续画
++    if (e->button() == Qt::LeftButton && m_activeButton &&
++        !m_selection->isVisible() && !m_eraserActive) {
++        int hitIdx = m_captureToolObjects.find(e->pos(), size());
++        if (hitIdx < 0) {
++            hitIdx = objectIndexContainingPoint(e->pos());
++        }
++        if (hitIdx >= 0) {
++            uncheckActiveTool();
++        }
++    }
++
++    // flameshot-ocr: 角点缩放优先拦截（早于“取消选中”逻辑，
++    // 且抓取区向框外扩展——放大方向从手柄外沿起拖也能抓住）
++    if (e->button() == Qt::LeftButton && m_activeButton.isNull() &&
++        !m_eraserActive) {
++        int candidateIndex = m_panel->activeLayerIndex();
++        if (candidateIndex < 0) {
++            candidateIndex = objectIndexWithGrabZone(e->pos());
++        }
++        if (candidateIndex >= 0) {
++            auto candidate = m_captureToolObjects.at(candidateIndex);
++            if (candidate) {
++                const QRect candidateRect =
++                  candidate->boundingRect().normalized();
++                const int handle =
++                  resizeGrabHandleAt(candidateRect, e->pos());
++                if (handle > 0) {
++                    if (m_panel->activeLayerIndex() != candidateIndex) {
++                        m_panel->setActiveLayer(candidateIndex);
++                    }
++                    // flameshot-ocr: 预烘焙底图（原图 + 除本对象外的全部标注）。
++                    // 拖动期间每帧只需「拷贝底图 + 渲染被拖对象」，
++                    // 避免全量重绘导致跳帧、缩放跟手性差（“速度过快”观感）
++                    m_resizeBase = m_context.origScreenshot;
++                    for (const auto& toolItem :
++                         m_captureToolObjects.captureToolObjects()) {
++                        if (toolItem && toolItem != candidate) {
++                            processPixmapWithTool(&m_resizeBase, toolItem);
++                        }
++                    }
++                    m_captureToolObjectsBackup = m_captureToolObjects;
++                    m_objectResizing = true;
++                    m_objectResizeHandle = handle;
++                    m_objectStartRect = candidateRect;
++                    m_objectResizeStartPos = e->pos();
++                    m_resizeVirtualDelta = QPointF(0, 0);
++                    m_resizeLastPos = e->pos();
++                    m_resizeLastRect = candidateRect;
++                    e->accept();
++                    return;
++                }
++            }
++        }
++    }
++
+     // reset object selection if capture area selection is active
+     if (m_selection->getMouseSide(e->pos()) != SelectionWidget::CENTER) {
+         m_panel->setActiveLayer(-1);
+@@ -934,6 +2086,18 @@ void CaptureWidget::mousePressEvent(QMouseEvent* e)
+     }
+ 
+     selectToolItemAtPos(m_mousePressedPos);
++
++    // flameshot-ocr: 空心形状内部点击也能选中（find() 基于已绘制像素，
++    // 轮廓内部会落空），选中后即可拖动移动
++    if (m_panel->activeLayerIndex() < 0 && e->button() == Qt::LeftButton &&
++        !m_eraserActive && m_activeButton.isNull()) {
++        const int interiorIndex = objectIndexContainingPoint(m_mousePressedPos);
++        if (interiorIndex >= 0) {
++            m_panel->setActiveLayer(interiorIndex);
++            drawObjectSelection();
++        }
++    }
++
+     updateSelectionState();
+     updateCursor();
+ }
+@@ -973,6 +2137,79 @@ void CaptureWidget::mouseDoubleClickEvent(QMouseEvent* event)
+ 
+ void CaptureWidget::mouseMoveEvent(QMouseEvent* e)
+ {
++    // flameshot-ocr: 选中对象的角点拖拽缩放
++    if (m_objectResizing) {
++        CaptureTool* object = activeToolObject().data();
++        if (object) {
++            // 与上游移动对象相同的重绘模式：失效旧区域 → 改对象 →
++            // drawToolsData 从原图重画（清残影）→ 再画选择框 → 失效新区域
++            update(paddedUpdateRect(object->boundingRect()));
++            // flameshot-ocr: 自适应增益缩放 ——
++            // 慢速微拖：按 resizeSensitivity 精调（默认 20% = 比鼠标慢 5 倍）；
++            // 快速拖动：增益升到 1:1，手柄紧跟鼠标（连续拖动、不脱手）。
++            // 增量累积（含小数），慢速微动不会因取整丢失。
++            const QPoint frameDelta = e->pos() - m_resizeLastPos;
++            m_resizeLastPos = e->pos();
++            const qreal slowGain =
++              qBound(0.05, ConfigHandler().resizeSensitivity() / 100.0, 1.0);
++            constexpr qreal SLOW_SPEED = 4.0;   // px/事件
++            constexpr qreal FAST_SPEED = 22.0;  // px/事件
++            const qreal speed = frameDelta.manhattanLength();
++            qreal gain;
++            if (speed >= FAST_SPEED) {
++                gain = 1.0;
++            } else if (speed <= SLOW_SPEED) {
++                gain = slowGain;
++            } else {
++                gain = slowGain + (speed - SLOW_SPEED) /
++                                    (FAST_SPEED - SLOW_SPEED) *
++                                    (1.0 - slowGain);
++            }
++            m_resizeVirtualDelta +=
++              QPointF(frameDelta.x() * gain, frameDelta.y() * gain);
++            if (qEnvironmentVariableIsSet("FLAMESHOT_OCR_SELFTEST")) {
++                qWarning() << "RESIZE-DBG frame:" << frameDelta
++                           << "speed:" << speed << "gain:" << gain
++                           << "virtual:" << m_resizeVirtualDelta;
++            }
++            const QPoint delta(qRound(m_resizeVirtualDelta.x()),
++                               qRound(m_resizeVirtualDelta.y()));
++            QRect newRect = m_objectStartRect;
++            if (m_objectResizeHandle & 1) {
++                newRect.setLeft(newRect.left() + delta.x());
++            }
++            if (m_objectResizeHandle & 2) {
++                newRect.setRight(newRect.right() + delta.x());
++            }
++            if (m_objectResizeHandle & 4) {
++                newRect.setTop(newRect.top() + delta.y());
++            }
++            if (m_objectResizeHandle & 8) {
++                newRect.setBottom(newRect.bottom() + delta.y());
++            }
++            newRect = newRect.normalized();
++            if (newRect.width() >= 8 && newRect.height() >= 8) {
++                // 关键：从「上一帧矩形」映射到「本帧矩形」（增量映射）。
++                // 若始终从 m_objectStartRect 映射，已放大过的点位会被
++                // 反复按比例放大（复利效应），导致缩放指数式爆炸、完全失控
++                scaleToolToRect(object, m_resizeLastRect, newRect);
++                m_resizeLastRect = newRect;
++                // 轻量重绘：拷贝预烘焙底图 + 只渲染被拖动对象，
++                // 帧间开销恒定（不随标注数量增长），缩放跟手更平滑
++                if (!m_resizeBase.isNull()) {
++                    m_context.screenshot = m_resizeBase;
++                    processPixmapWithTool(&m_context.screenshot, object);
++                } else {
++                    drawToolsData(false);
++                }
++                drawObjectSelection();
++                update(paddedUpdateRect(object->boundingRect()));
++            }
++        }
++        e->accept();
++        return;
++    }
++
+     if (m_magnifier) {
+         if (!m_activeButton) {
+             m_magnifier->show();
+@@ -1078,9 +2315,24 @@ void CaptureWidget::mouseReleaseEvent(QMouseEvent* e)
+     }
+     m_mouseIsClicked = false;
+     m_activeToolIsMoved = false;
++    const bool wasResizing = m_objectResizing;
++    m_objectResizing = false;
++    if (wasResizing) {
++        // 缩放结束：写入撤销栈、清空底图、做一次全量重绘恢复正常渲染，
++        // 并重画选中框/手柄（drawToolsData 会擦掉手柄，重画后
++        // 手柄保持在原位、可立即再次拖动——支持连续缩放）
++        pushObjectsStateToUndoStack();
++        m_resizeBase = QPixmap();
++        drawToolsData();
++        if (m_panel->activeLayerIndex() >= 0) {
++            drawObjectSelection();
++        }
++        update();
++    }
+ 
+     updateSelectionState();
+     updateCursor();
++    updatePreToolbar();
+ }
+ 
+ /**
+@@ -1095,10 +2347,10 @@ void CaptureWidget::setToolSize(int size)
+     m_context.toolSize = qBound(1, size, maxToolSize);
+     updateTool(activeButtonTool());
+ 
+-    QPoint topLeft =
+-      QGuiAppCurrentScreen().currentScreen()->geometry().topLeft();
++    // flameshot-ocr: 提示圈跟随当前光标（上游固定放在屏幕左上角）
+     int offset = m_notifierBox->width() / 4;
+-    m_notifierBox->move(mapFromGlobal(topLeft) + QPoint(offset, offset));
++    m_notifierBox->move(mapFromGlobal(QCursor::pos()) +
++                        QPoint(offset, offset));
+     m_notifierBox->showMessage(QString::number(m_context.toolSize));
+ 
+     if (m_context.toolSize != oldSize) {
+@@ -1136,6 +2388,126 @@ void CaptureWidget::keyPressEvent(QKeyEvent* e)
+     }
+ }
+ 
++// flameshot-ocr: 对象缩放辅助 —— 命中测试与点位等比缩放
++int CaptureWidget::objectResizeHandleAt(const QPoint& pos)
++{
++    if (m_eraserActive || m_panel->activeLayerIndex() < 0) {
++        return -1;
++    }
++    auto object = activeToolObject();
++    if (!object) {
++        return -1;
++    }
++    return resizeHandleForRect(object->boundingRect().normalized(), pos);
++}
++
++// 手柄判定：距离任一边 <= 12px 即命中该边（左右/上下同时命中视为无效）；
++// 该判定同时用于“框内贴边”和“框外贴边”，保证放大与缩小两个方向都能抓住
++int CaptureWidget::resizeHandleForRect(const QRect& rect, const QPoint& pos)
++{
++    if (rect.isNull()) {
++        return -1;
++    }
++    const int margin = 12;
++    int handle = 0;
++    if (qAbs(pos.x() - rect.left()) <= margin) {
++        handle |= 1;
++    }
++    if (qAbs(pos.x() - rect.right()) <= margin) {
++        handle |= 2;
++    }
++    if (qAbs(pos.y() - rect.top()) <= margin) {
++        handle |= 4;
++    }
++    if (qAbs(pos.y() - rect.bottom()) <= margin) {
++        handle |= 8;
++    }
++    if (handle == 0 || handle == 3 || handle == 12) {
++        return -1;
++    }
++    return handle;
++}
++
++// 找到抓取区（对象包围盒外扩 12px）内最上层的对象
++int CaptureWidget::objectIndexWithGrabZone(const QPoint& pos)
++{
++    const int zone = 12;
++    const auto objects = m_captureToolObjects.captureToolObjects();
++    for (int i = objects.size() - 1; i >= 0; --i) {
++        auto object = objects.at(i);
++        if (!object) {
++            continue;
++        }
++        if (object->boundingRect()
++              .normalized()
++              .adjusted(-zone, -zone, zone, zone)
++              .contains(pos)) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++// 实际可触发的缩放手柄：框外任意边/角均可抓取；
++// 框内仅角点（同时贴近两条边）触发缩放，边中部让位给“拖动移动”，
++// 否则小方框的整个区域都是缩放热区、无法拖动
++int CaptureWidget::resizeGrabHandleAt(const QRect& rect, const QPoint& pos)
++{
++    const int handle = resizeHandleForRect(rect, pos);
++    if (handle <= 0) {
++        return -1;
++    }
++    if (!rect.contains(pos)) {
++        return handle;
++    }
++    const bool corner =
++      (handle == 5 || handle == 6 || handle == 9 || handle == 10);
++    return corner ? handle : -1;
++}
++
++// 包围盒内部命中的最上层对象（空心形状内部无绘制像素，find() 会落空，
++// 用包围盒补充判定，使空心方框内部也能点选/拖动）
++int CaptureWidget::objectIndexContainingPoint(const QPoint& pos)
++{
++    const auto objects = m_captureToolObjects.captureToolObjects();
++    for (int i = objects.size() - 1; i >= 0; --i) {
++        auto object = objects.at(i);
++        if (object && object->boundingRect().normalized().contains(pos)) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++void CaptureWidget::scaleToolToRect(CaptureTool* tool,
++                                    const QRect& from,
++                                    const QRect& to)
++{
++    if (!tool || from.width() <= 0 || from.height() <= 0) {
++        return;
++    }
++    const qreal scaleX = qreal(to.width()) / from.width();
++    const qreal scaleY = qreal(to.height()) / from.height();
++    // 注意：用 qRound 而非 int 截断——增量缩放时每帧的增长往往不足
++    // 1 像素，截断会把慢速微调的全部增量逐帧吃掉
++    auto mapPoint = [&](const QPoint& p) {
++        return QPoint(qRound(to.left() + (p.x() - from.left()) * scaleX),
++                      qRound(to.top() + (p.y() - from.top()) * scaleY));
++    };
++    if (auto* twoPointTool = dynamic_cast<AbstractTwoPointTool*>(tool)) {
++        const auto points = twoPointTool->points();
++        twoPointTool->setPoints({ mapPoint(points.first),
++                                  mapPoint(points.second) });
++    } else if (auto* pathTool = dynamic_cast<AbstractPathTool*>(tool)) {
++        QVector<QPoint> mapped;
++        mapped.reserve(pathTool->points().size());
++        for (const QPoint& p : pathTool->points()) {
++            mapped.append(mapPoint(p));
++        }
++        pathTool->setPoints(mapped);
++    }
++}
++
+ void CaptureWidget::keyReleaseEvent(QKeyEvent* e)
+ {
+     if (e->key() == Qt::Key_Control) {
+@@ -1146,6 +2518,9 @@ void CaptureWidget::keyReleaseEvent(QKeyEvent* e)
+ 
+ void CaptureWidget::wheelEvent(QWheelEvent* e)
+ {
++    // flameshot-ocr: 滚轮时以当前光标位置显示粗细提示圈
++    // （上游固定放在屏幕左上角，未移动过鼠标时会出现在 (0,0)）
++    m_context.mousePos = mapFromGlobal(QCursor::pos());
+     /* Mouse scroll usually gives value 120, not more or less, just how many
+      * times.
+      * Touchpad gives the value 2 or more (usually 2-8), it doesn't give
+@@ -1186,6 +2561,7 @@ void CaptureWidget::resizeEvent(QResizeEvent* e)
+         m_panel->setFixedHeight(height());
+         m_buttonHandler->updateScreenRegions(rect());
+     }
++    positionPreToolbar();
+ }
+ 
+ void CaptureWidget::moveEvent(QMoveEvent* e)
+@@ -1459,6 +2835,20 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
+ {
+     switch (r) {
+         case CaptureTool::REQ_CLOSE_GUI:
++            // flameshot-ocr: 仅当“纯关闭”意图（无导出任务）时才做保护；
++            // 钉图/复制/保存等带任务的关闭属于正常导出，不应打断
++            if (m_context.request.tasks() == CaptureRequest::NO_TASK) {
++                if (m_selection->isVisible()) {
++                    // 有选区：取消选区、回到预选区悬浮工具条页（保留标注）
++                    resetSelectionToToolbar();
++                    break;
++                }
++                if (!m_captureToolObjects.captureToolObjects().isEmpty()) {
++                    if (m_quitPrompt->isHidden() && !promptQuit()) {
++                        break; // 用户取消，保持截图界面
++                    }
++                }
++            }
+             close();
+             break;
+         case CaptureTool::REQ_HIDE_GUI:
+@@ -1526,6 +2916,9 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
+ 
+ // flameshot-ocr: run OCR on the current selection (or the whole capture when
+ // nothing is selected) and display the result in a panel beside the selection.
++// 审查修复：改走 OcrHelper 公共管线 —— 不再在主线程 waitForFinished
++// 同步等待（旧实现最长冻结 UI 3 秒）；被新任务取代的旧结果通过
++// m_ocrGeneration 世代计数器作废；QProcess/临时文件在任务结束后立即回收。
+ void CaptureWidget::runOcr()
+ {
+     QRect sel = m_context.selection.isNull() ? rect() : m_context.selection;
+@@ -1540,78 +2933,31 @@ void CaptureWidget::runOcr()
+     m_ocrPanel->showLoading(sel);
+ 
+     const qreal dpr = m_context.origScreenshot.devicePixelRatio();
+-    QRect deviceRect(sel.topLeft() * dpr, sel.bottomRight() * dpr);
++    // 审查修复：分数缩放下用 qRound 映射设备坐标避免亚像素偏差；并且先
++    // 裁剪 QPixmap 再 toImage，避免整屏像素的深拷贝（4K 屏可省数十 MB）。
++    QRect deviceRect(
++      QPoint(qRound(sel.left() * dpr), qRound(sel.top() * dpr)),
++      QPoint(qRound(sel.right() * dpr), qRound(sel.bottom() * dpr)));
+     deviceRect = deviceRect.intersected(m_context.origScreenshot.rect());
+     if (deviceRect.isEmpty()) {
+         m_ocrPanel->showFailure();
+         return;
+     }
+-    const QImage crop = m_context.origScreenshot.toImage().copy(deviceRect);
+-
+-    if (!m_ocrProcess) {
+-        m_ocrProcess = new QProcess(this);
+-        connect(m_ocrProcess,
+-                &QProcess::finished,
+-                this,
+-                &CaptureWidget::onOcrFinished);
+-        connect(m_ocrProcess,
+-                &QProcess::errorOccurred,
+-                this,
+-                [this](QProcess::ProcessError error) {
+-                    if (error == QProcess::FailedToStart && m_ocrPanel) {
+-                        m_ocrPanel->showFailure(
+-                          QStringLiteral("tesseract: FailedToStart"));
+-                    }
+-                });
+-    }
+-    if (m_ocrProcess->state() != QProcess::NotRunning) {
+-        m_ocrProcess->kill();
+-        m_ocrProcess->waitForFinished(3000);
+-    }
+-
+-    delete m_ocrTempFile;
+-    m_ocrTempFile = new QTemporaryFile(this);
+-    m_ocrTempFile->setFileTemplate(
+-      QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+-      QStringLiteral("/flameshot-ocr-XXXXXX.png"));
+-    if (!m_ocrTempFile->open() || !crop.save(m_ocrTempFile, "PNG")) {
+-        m_ocrPanel->showFailure(QStringLiteral("Cannot write temporary image"));
+-        return;
+-    }
++    const QImage crop = m_context.origScreenshot.copy(deviceRect).toImage();
+ 
+-    QString command = ConfigHandler().ocrCommand();
+-    command.replace(QStringLiteral("%i"), m_ocrTempFile->fileName());
+-    QStringList args = QProcess::splitCommand(command);
+-    if (args.isEmpty()) {
+-        m_ocrPanel->showFailure(QStringLiteral("Empty ocrCommand"));
+-        return;
+-    }
+-    const QString program = args.takeFirst();
+-    m_ocrProcess->start(program, args);
+-}
+-
+-void CaptureWidget::onOcrFinished(int exitCode, QProcess::ExitStatus status)
+-{
+-    if (!m_ocrPanel) {
+-        return;
+-    }
+-    if (status != QProcess::NormalExit || exitCode != 0) {
+-        const QString err =
+-          QString::fromLocal8Bit(m_ocrProcess->readAllStandardError())
+-            .simplified();
+-        m_ocrPanel->showFailure(err.left(300));
+-        return;
+-    }
+-    QString text = QString::fromUtf8(m_ocrProcess->readAllStandardOutput());
+-    text.remove(QChar('\f'));
+-    text.replace(QRegularExpression(QStringLiteral("\\n{3,}")),
+-                 QStringLiteral("\n\n"));
+-    text = text.trimmed();
+-    if (text.isEmpty()) {
+-        m_ocrPanel->showFailure();
+-        return;
+-    }
+-    m_ocrPanel->showText(text);
++    const quint64 generation = ++m_ocrGeneration;
++    OcrHelper::run(crop, this, [this, generation](bool ok, const QString& text) {
++        if (generation != m_ocrGeneration || !m_ocrPanel) {
++            return; // 已被更新的识别任务取代，或面板已销毁
++        }
++        if (!ok) {
++            m_ocrPanel->showFailure(text);
++        } else if (text.isEmpty()) {
++            m_ocrPanel->showFailure();
++        } else {
++            m_ocrPanel->showText(text);
++        }
++    });
+ }
+ 
+ /**
+@@ -1858,6 +3204,33 @@ void CaptureWidget::updateSizeIndicator()
+ 
+ void CaptureWidget::updateCursor()
+ {
++    // flameshot-ocr: 橡皮擦模式光标
++    if (m_eraserActive) {
++        setCursor(Qt::PointingHandCursor);
++        return;
++    }
++    // flameshot-ocr: 标注对象悬停光标（手柄=缩放，对象=移动）
++    if (!m_activeButton && !m_mouseIsClicked) {
++        const QPoint cursorPos = mapFromGlobal(QCursor::pos());
++        int hoverIndex = m_panel->activeLayerIndex();
++        if (hoverIndex < 0) {
++            hoverIndex = objectIndexWithGrabZone(cursorPos);
++        }
++        if (hoverIndex >= 0) {
++            auto hoverObject = m_captureToolObjects.at(hoverIndex);
++            if (hoverObject &&
++                resizeGrabHandleAt(hoverObject->boundingRect().normalized(),
++                                   cursorPos) > 0) {
++                setCursor(Qt::SizeFDiagCursor);
++                return;
++            }
++        }
++        if (m_captureToolObjects.find(cursorPos, size()) >= 0 ||
++            objectIndexContainingPoint(cursorPos) >= 0) {
++            setCursor(Qt::SizeAllCursor);
++            return;
++        }
++    }
+     if (m_colorPicker && m_colorPicker->isVisible()) {
+         setCursor(Qt::ArrowCursor);
+     } else if (m_activeButton != nullptr &&
+@@ -1875,6 +3248,12 @@ void CaptureWidget::updateCursor()
+ 
+ void CaptureWidget::updateSelectionState()
+ {
++    // flameshot-ocr: 橡皮擦模式下屏蔽选区控件——
++    // 否则拖动空白处会画出区域选区（用户未开启框选时也会发生）
++    if (m_eraserActive) {
++        m_selection->setIgnoreMouse(true);
++        return;
++    }
+     auto toolType = activeButtonToolType();
+     if (toolType == CaptureTool::TYPE_MOVESELECTION) {
+         m_selection->setIdleCentralCursor(Qt::OpenHandCursor);
+@@ -1974,6 +3353,19 @@ void CaptureWidget::drawObjectSelection()
+     if (toolItem && !toolItem->editMode()) {
+         QPainter painter(&m_context.screenshot);
+         toolItem->drawObjectSelection(painter);
++        // flameshot-ocr: 四角缩放手柄
++        if (!m_eraserActive) {
++            const QRect handleRect = toolItem->boundingRect().normalized();
++            painter.setPen(QPen(Qt::white, 1));
++            painter.setBrush(ConfigHandler().uiColor());
++            for (const QPoint& corner :
++                 { handleRect.topLeft(),
++                   handleRect.topRight(),
++                   handleRect.bottomLeft(),
++                   handleRect.bottomRight() }) {
++                painter.drawRect(QRect(corner - QPoint(4, 4), QSize(8, 8)));
++            }
++        }
+         // TODO move this elsewhere
+         if (m_context.toolSize != toolItem->size()) {
+             m_context.toolSize = toolItem->size();
+@@ -2187,15 +3579,65 @@ void CaptureWidget::drawErrorMessage(const QString& msg, QPainter* painter)
+ 
+ void CaptureWidget::drawInactiveRegion(QPainter* painter)
+ {
+-    QColor overlayColor(0, 0, 0, m_opacity);
+-    painter->setBrush(overlayColor);
+-    QRect r;
+-    if (m_selection->isVisible()) {
+-        r = m_selection->geometry().normalized();
++    // flameshot-ocr: 未框选时不压暗屏幕（Win11 风格，保持画面原样，
++    // 预选区悬浮工具条和取色都在这个状态下工作）
++    if (!m_selection->isVisible()) {
++        // 选区刚消失时恢复明亮，同时把渐入状态复位
++        if (m_dimAlpha > 0) {
++            m_dimAlpha = 0;
++        }
++        return;
++    }
++    // 选区首次出现：把压暗从 0 渐入到目标值，避免“闪一下”变暗
++    if (m_dimAlpha <= 0) {
++        m_dimAlpha = 1;
++        auto* dimAnim = new QVariantAnimation(this);
++        dimAnim->setDuration(150);
++        dimAnim->setStartValue(1);
++        dimAnim->setEndValue(m_opacity);
++        dimAnim->setEasingCurve(QEasingCurve::InOutQuad);
++        connect(dimAnim, &QVariantAnimation::valueChanged, this,
++                [this](const QVariant& v) {
++                    m_dimAlpha = v.toReal();
++                    update();
++                });
++        connect(dimAnim, &QVariantAnimation::finished, dimAnim,
++                &QVariantAnimation::deleteLater);
++        dimAnim->start(QAbstractAnimation::DeleteWhenStopped);
+     }
++    QColor overlayColor(0, 0, 0, int(m_dimAlpha));
++    painter->setBrush(overlayColor);
++    QRect r = m_selection->geometry().normalized();
+     QRegion grey(rect());
+     grey = grey.subtracted(r);
+ 
+     painter->setClipRegion(grey);
+     painter->drawRect(-1, -1, rect().width() + 1, rect().height() + 1);
+ }
++
++// flameshot-ocr: 截图窗渐入，消除 Wayland 首帧闪变
++void CaptureWidget::showEvent(QShowEvent* event)
++{
++    QWidget::showEvent(event);
++    auto* fade = new QPropertyAnimation(this, "windowOpacity", this);
++    fade->setDuration(150);
++    fade->setStartValue(0.0);
++    fade->setEndValue(1.0);
++    fade->setEasingCurve(QEasingCurve::InOutQuad);
++    connect(fade, &QPropertyAnimation::finished, fade,
++            &QPropertyAnimation::deleteLater);
++    fade->start(QAbstractAnimation::DeleteWhenStopped);
++
++    // flameshot-ocr: 从全局快捷键（F1）/启动器唤起时，KDE 的启动器会把
++    // xdg-activation token 放进本进程环境（XDG_ACTIVATION_TOKEN）。
++    // 截图遮罩不抢焦点，Qt 不会在 show 时自动消费它；若无人使用该
++    // token，kwin 的启动反馈（光标旁的应用图标）会一直挂到约 5 秒超时。
++    // 这里显式用 token 激活窗口，kwin 收到后立即清除反馈图标。
++    if (!qEnvironmentVariableIsEmpty("XDG_ACTIVATION_TOKEN")) {
++        qDebug() << "flameshot-ocr: consuming XDG_ACTIVATION_TOKEN to clear "
++                    "launch feedback";
++        if (QWindow* handle = windowHandle()) {
++            handle->requestActivate();
++        }
++    }
++}
+diff --git a/src/widgets/capture/capturewidget.h b/src/widgets/capture/capturewidget.h
+index 7fd1eed0..87670ccc 100644
+--- a/src/widgets/capture/capturewidget.h
++++ b/src/widgets/capture/capturewidget.h
+@@ -21,8 +21,8 @@
+ #include "src/widgets/capture/magnifierwidget.h"
+ #include "src/widgets/capture/selectionwidget.h"
+ #include <QMessageBox>
++#include <QHash>
+ #include <QPointer>
+-#include <QProcess>
+ #include <QTimer>
+ #include <QUndoStack>
+ #include <QWidget>
+@@ -43,7 +43,8 @@ class UpdateNotificationWidget;
+ class UtilityPanel;
+ class SidePanelWidget;
+ class OcrPanel;
+-class QTemporaryFile;
++class PreToolbar;
++class ColorGrabWidget;
+ 
+ class CaptureWidget : public QWidget
+ {
+@@ -96,6 +97,20 @@ private slots:
+     void onGridSizeChanged(int size);
+ 
+     void startColorGrab();
++    void openColorGrab();
++    void onColorGrabbed();
++    void onColorGrabAborted();
++    void fullscreenCopy();
++    void saveFullCapture();
++    void openSettings();
++    void updatePreToolbar();
++    void positionPreToolbar();
++    void resetSelectionToToolbar();
++    void onPreToolbarToolRequested(CaptureTool::Type type);
++    void runSelfTest();
++    void synthMousePress(const QPoint& pos);
++    void synthMouseMove(const QPoint& pos);
++    void synthMouseRelease(const QPoint& pos);
+ 
+ public:
+     void removeToolObject(int index = -1);
+@@ -114,12 +129,19 @@ protected:
+     void moveEvent(QMoveEvent* moveEvent) override;
+     void changeEvent(QEvent* changeEvent) override;
+     void closeEvent(QCloseEvent* event) override;
++    void showEvent(QShowEvent* event) override;
+ 
+ private:
+     void pushObjectsStateToUndoStack();
+     void releaseActiveTool();
+     void uncheckActiveTool();
+     int selectToolItemAtPos(const QPoint& pos);
++    int objectResizeHandleAt(const QPoint& pos);
++    int resizeHandleForRect(const QRect& rect, const QPoint& pos);
++    int resizeGrabHandleAt(const QRect& rect, const QPoint& pos);
++    int objectIndexWithGrabZone(const QPoint& pos);
++    int objectIndexContainingPoint(const QPoint& pos);
++    void scaleToolToRect(CaptureTool* tool, const QRect& from, const QRect& to);
+     void showColorPicker(const QPoint& pos);
+     bool startDrawObjectTool(const QPoint& pos);
+     QPointer<CaptureTool> activeToolObject();
+@@ -140,7 +162,6 @@ private:
+     void makeChild(QWidget* w);
+     void restoreCircleCountState();
+     void runOcr();
+-    void onOcrFinished(int exitCode, QProcess::ExitStatus status);
+ 
+     QList<QShortcut*> newShortcut(const QKeySequence& key,
+                                   QWidget* parent,
+@@ -169,10 +190,27 @@ private:
+     // Context information
+     CaptureContext m_context;
+ 
+-    // flameshot-ocr: OCR process and result panel
++    // flameshot-ocr: OCR result panel。识别任务走 OcrHelper 公共管线，
++    // m_ocrGeneration 用于丢弃过期的回调（新任务发起后旧任务的结果不再上屏）
+     OcrPanel* m_ocrPanel = nullptr;
+-    QProcess* m_ocrProcess = nullptr;
+-    QTemporaryFile* m_ocrTempFile = nullptr;
++    quint64 m_ocrGeneration = 0;
++
++    // flameshot-ocr: Win11 风格预选区悬浮工具条 + 取色器
++    PreToolbar* m_preToolbar = nullptr;
++    ColorGrabWidget* m_colorGrabber = nullptr;
++    QHash<CaptureTool::Type, CaptureToolButton*> m_buttonsByType;
++    bool m_eraserActive = false;
++    bool m_objectResizing = false;
++    int m_objectResizeHandle = 0;
++    QRect m_objectStartRect;
++    QPoint m_objectResizeStartPos;
++    // 缩放期间预烘焙底图（避免每帧全量重绘）
++    QPixmap m_resizeBase;
++    // 自适应缩放的增量状态（虚拟位移 + 上一帧鼠标位置）
++    QPointF m_resizeVirtualDelta;
++    QPoint m_resizeLastPos;
++    // 上一帧的缩放目标矩形（增量映射基准，避免复利放大）
++    QRect m_resizeLastRect;
+ 
+     // Main ui color
+     QColor m_uiColor;
+@@ -181,6 +219,8 @@ private:
+ 
+     // Outside selection opacity
+     int m_opacity;
++    // flameshot-ocr: 渐入用的当前压暗值（动画驱动，避免选区出现时突然变暗）
++    qreal m_dimAlpha = 0;
+     int m_toolSizeByKeyboard;
+ 
+     // utility flags
+diff --git a/src/widgets/capture/ocrpanel.cpp b/src/widgets/capture/ocrpanel.cpp
+index 10f50777..047057c5 100644
+--- a/src/widgets/capture/ocrpanel.cpp
++++ b/src/widgets/capture/ocrpanel.cpp
+@@ -2,65 +2,150 @@
+ // SPDX-FileCopyrightText: 2026 flameshot-ocr contributors
+ 
+ #include "ocrpanel.h"
++#include "src/utils/confighandler.h"
+ #include <QApplication>
+ #include <QClipboard>
++#include <QContextMenuEvent>
+ #include <QFrame>
+ #include <QHBoxLayout>
+ #include <QLabel>
+ #include <QLocale>
++#include <QMenu>
++#include <QMouseEvent>
+ #include <QPainter>
++#include <QWindow>
+ #include <QPlainTextEdit>
+ #include <QPushButton>
++#include <QScreen>
++#include <QToolButton>
+ #include <QVBoxLayout>
++#include <QWheelEvent>
++
++namespace
++{
++constexpr int RESIZE_MARGIN = 8;   // 边缘拉伸热区宽度
++constexpr int MIN_PANEL_W = 240;
++constexpr int MIN_PANEL_H = 120;
++enum Edge
++{
++    NoEdge = 0,
++    Left = 1,
++    Right = 2,
++    Top = 4,
++    Bottom = 8
++};
++}
+ 
+ OcrPanel::OcrPanel(QWidget* parent)
+   : QWidget(parent)
+ {
+     setObjectName(QStringLiteral("ocrPanel"));
++    setMouseTracking(true);
+ 
+     auto* layout = new QVBoxLayout(this);
+     layout->setContentsMargins(10, 8, 10, 10);
+     layout->setSpacing(6);
+ 
++    // 标题行：标题 + 最小化/关闭按钮（整体可拖动）
++    m_header = new QWidget(this);
++    auto* header = new QHBoxLayout(m_header);
++    header->setContentsMargins(0, 0, 0, 0);
++    header->setSpacing(4);
+     m_titleLabel = new QLabel(tr2("文字识别", "OCR"), this);
+     m_titleLabel->setObjectName(QStringLiteral("ocrTitle"));
++    header->addWidget(m_titleLabel);
++    header->addStretch(1);
++    m_minButton = new QToolButton(this);
++    m_minButton->setObjectName(QStringLiteral("ocrMin"));
++    m_minButton->setText(QStringLiteral("—"));
++    m_minButton->setToolTip(tr2("最小化", "Minimize"));
++    m_minButton->setAutoRaise(true);
++    m_minButton->setCursor(Qt::PointingHandCursor);
++    header->addWidget(m_minButton);
++    m_closeButton = new QToolButton(this);
++    m_closeButton->setObjectName(QStringLiteral("ocrClose"));
++    m_closeButton->setText(QStringLiteral("✕"));
++    m_closeButton->setToolTip(tr2("关闭", "Close"));
++    m_closeButton->setAutoRaise(true);
++    m_closeButton->setCursor(Qt::PointingHandCursor);
++    header->addWidget(m_closeButton);
++    layout->addWidget(m_header);
++
++    // 内容区：识别文本 + 底部状态/复制按钮（最小化时整体隐藏）
++    m_body = new QWidget(this);
++    auto* bodyLayout = new QVBoxLayout(m_body);
++    bodyLayout->setContentsMargins(0, 0, 0, 0);
++    bodyLayout->setSpacing(6);
+ 
+-    m_textEdit = new QPlainTextEdit(this);
++    m_textEdit = new QPlainTextEdit(m_body);
+     m_textEdit->setObjectName(QStringLiteral("ocrText"));
+     m_textEdit->setReadOnly(true);
+     m_textEdit->setFrameShape(QFrame::NoFrame);
+     m_textEdit->setPlaceholderText(
+       tr2("识别结果将显示在这里", "Recognized text appears here"));
++    bodyLayout->addWidget(m_textEdit, 1);
+ 
+-    m_copyButton = new QPushButton(tr2("复制文字", "Copy text"), this);
++    m_copyButton = new QPushButton(tr2("复制文字", "Copy text"), m_body);
+     m_copyButton->setObjectName(QStringLiteral("ocrCopy"));
+     m_copyButton->setEnabled(false);
+ 
+-    m_statusLabel = new QLabel(this);
++    m_statusLabel = new QLabel(m_body);
+     m_statusLabel->setObjectName(QStringLiteral("ocrStatus"));
+ 
+-    layout->addWidget(m_titleLabel);
+-    layout->addWidget(m_textEdit, 1);
+     auto* footer = new QHBoxLayout();
+     footer->addWidget(m_statusLabel, 1);
+     footer->addWidget(m_copyButton);
+-    layout->addLayout(footer);
++    bodyLayout->addLayout(footer);
++    layout->addWidget(m_body, 1);
+ 
+     connect(m_copyButton, &QPushButton::clicked, this, [this]() {
+         QApplication::clipboard()->setText(m_textEdit->toPlainText());
+         m_statusLabel->setText(tr2("已复制 ✓", "Copied ✓"));
+     });
+ 
++    connect(m_minButton, &QToolButton::clicked, this, [this]() {
++        setMinimized(!m_minimized);
++    });
++    connect(m_closeButton, &QToolButton::clicked, this, &OcrPanel::hide);
++
++    // 中文右键菜单（复制/全选），替代 QPlainTextEdit 默认的英文菜单
++    m_textEdit->setContextMenuPolicy(Qt::CustomContextMenu);
++    connect(m_textEdit,
++            &QWidget::customContextMenuRequested,
++            this,
++            [this](const QPoint& pos) {
++                QMenu menu(m_textEdit);
++                QAction* copyAct = menu.addAction(tr2("复制", "Copy"));
++                copyAct->setEnabled(m_textEdit->textCursor().hasSelection());
++                QAction* selectAllAct =
++                  menu.addAction(tr2("全选", "Select all"));
++                selectAllAct->setEnabled(!m_textEdit->toPlainText().isEmpty());
++                QAction* chosen = menu.exec(m_textEdit->mapToGlobal(pos));
++                if (chosen == copyAct) {
++                    QApplication::clipboard()->setText(
++                      m_textEdit->textCursor().selectedText());
++                    m_statusLabel->setText(tr2("已复制 ✓", "Copied ✓"));
++                } else if (chosen == selectAllAct) {
++                    m_textEdit->selectAll();
++                }
++            });
++
++    const QString accent = ConfigHandler().uiColor().name();
+     setStyleSheet(QStringLiteral(
+       "#ocrTitle { color: #e6e6e6; font-weight: bold; font-size: 13px; }"
+       "#ocrText { background-color: #26262b; color: #ececec; border: none; "
+       "border-radius: 6px; padding: 6px; font-size: 13px; "
+-      "selection-background-color: #5842a3; }"
++      "selection-background-color: %1; }"
+       "#ocrStatus { color: #9a9aa2; font-size: 11px; }"
+-      "#ocrCopy { background-color: #6c4fd8; color: #ffffff; border: none; "
++      "#ocrMin, #ocrClose { color: #9a9aa2; background: transparent; "
++      "border: none; font-size: 13px; padding: 1px 7px; }"
++      "#ocrMin:hover, #ocrClose:hover { color: #ffffff; "
++      "background: #3f3f46; border-radius: 4px; }"
++      "#ocrCopy { background-color: %1; color: #ffffff; border: none; "
+       "border-radius: 5px; padding: 6px 16px; font-size: 12px; }"
+-      "#ocrCopy:hover { background-color: #7d63e0; }"
+-      "#ocrCopy:disabled { background-color: #3c3c44; color: #77777f; }"));
++      "#ocrCopy:hover { background-color: %2; }"
++      "#ocrCopy:disabled { background-color: #3c3c44; color: #77777f; }")
++      .arg(accent, QColor(accent).lighter(115).name()));
+ }
+ 
+ QString OcrPanel::tr2(const char* zh, const char* en)
+@@ -79,13 +164,179 @@ void OcrPanel::paintEvent(QPaintEvent*)
+     painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
+ }
+ 
++void OcrPanel::wheelEvent(QWheelEvent* event)
++{
++    // 滚轮只用于滚动识别结果，不让画布把滚动当成“调整笔刷大小”
++    event->accept();
++}
++
++int OcrPanel::edgeAt(const QPoint& pos) const
++{
++    const QRect r = rect();
++    int e = NoEdge;
++    if (pos.x() <= r.left() + RESIZE_MARGIN) {
++        e |= Left;
++    }
++    if (pos.x() >= r.right() - RESIZE_MARGIN) {
++        e |= Right;
++    }
++    if (pos.y() <= r.top() + RESIZE_MARGIN) {
++        e |= Top;
++    }
++    if (pos.y() >= r.bottom() - RESIZE_MARGIN) {
++        e |= Bottom;
++    }
++    return e;
++}
++
++void OcrPanel::mousePressEvent(QMouseEvent* event)
++{
++    if (event->button() == Qt::LeftButton && !m_minimized) {
++        const int edge = edgeAt(event->pos());
++        if (edge != NoEdge) {
++            if (!parentWidget() && windowHandle()) {
++                // 顶层窗口（钉图伴随模式）：Wayland 禁止客户端自移/自缩放，
++                // 交给合成器的系统调整尺寸
++                if (windowHandle()->startSystemResize(Qt::Edges(edge))) {
++                    event->accept();
++                    return;
++                }
++            }
++            // 边缘：开始拉伸调整大小
++            m_resizeEdge = edge;
++            m_startGeo = geometry();
++            m_startGlobal = event->globalPosition().toPoint();
++            event->accept();
++            return;
++        }
++        if (m_header->geometry().contains(event->pos())) {
++            if (!parentWidget() && windowHandle()) {
++                // 顶层窗口：系统拖动（同上，move() 在 Wayland 无效）
++                if (windowHandle()->startSystemMove()) {
++                    event->accept();
++                    return;
++                }
++            }
++            // 标题栏：开始拖动
++            m_dragging = true;
++            m_dragOffset = event->globalPosition().toPoint() - pos();
++            event->accept();
++            return;
++        }
++    }
++    // 其余按下面板区域：只阻断向画布的冒泡
++    event->accept();
++}
++
++void OcrPanel::mouseMoveEvent(QMouseEvent* event)
++{
++    const QPoint global = event->globalPosition().toPoint();
++    if (m_resizeEdge != NoEdge) {
++        QRect r = m_startGeo;
++        const QPoint delta = global - m_startGlobal;
++        if (m_resizeEdge & Left) {
++            r.setLeft(r.left() + delta.x());
++        }
++        if (m_resizeEdge & Right) {
++            r.setRight(r.right() + delta.x());
++        }
++        if (m_resizeEdge & Top) {
++            r.setTop(r.top() + delta.y());
++        }
++        if (m_resizeEdge & Bottom) {
++            r.setBottom(r.bottom() + delta.y());
++        }
++        r = r.normalized();
++        // 最小尺寸约束
++        if (r.width() < MIN_PANEL_W) {
++            if (m_resizeEdge & Left) {
++                r.setLeft(r.right() - MIN_PANEL_W + 1);
++            } else {
++                r.setRight(r.left() + MIN_PANEL_W - 1);
++            }
++        }
++        if (r.height() < MIN_PANEL_H) {
++            if (m_resizeEdge & Top) {
++                r.setTop(r.bottom() - MIN_PANEL_H + 1);
++            } else {
++                r.setBottom(r.top() + MIN_PANEL_H - 1);
++            }
++        }
++        // 限制在截图画布内
++        if (parentWidget()) {
++            r = r.intersected(parentWidget()->rect());
++        }
++        if (r.width() >= MIN_PANEL_W && r.height() >= MIN_PANEL_H) {
++            setGeometry(r);
++        }
++        event->accept();
++        return;
++    }
++    if (m_dragging) {
++        QPoint p = global - m_dragOffset;
++        if (parentWidget()) {
++            const QRect area = parentWidget()->rect();
++            p.setX(qBound(0, p.x(), qMax(0, area.width() - width())));
++            p.setY(qBound(0, p.y(), qMax(0, area.height() - height())));
++        }
++        move(p);
++        event->accept();
++        return;
++    }
++    // 悬停光标提示：边缘=缩放，标题栏=移动
++    if (m_minimized) {
++        setCursor(Qt::ArrowCursor);
++    } else {
++        const int edge = edgeAt(event->pos());
++        if (edge == Left || edge == Right) {
++            setCursor(Qt::SizeHorCursor);
++        } else if (edge == Top || edge == Bottom) {
++            setCursor(Qt::SizeVerCursor);
++        } else if (edge == (Left | Top) || edge == (Right | Bottom)) {
++            setCursor(Qt::SizeFDiagCursor);
++        } else if (edge == (Top | Right) || edge == (Bottom | Left)) {
++            setCursor(Qt::SizeBDiagCursor);
++        } else if (m_header->geometry().contains(event->pos())) {
++            setCursor(Qt::SizeAllCursor);
++        } else {
++            setCursor(Qt::ArrowCursor);
++        }
++    }
++    event->accept();
++}
++
++void OcrPanel::mouseReleaseEvent(QMouseEvent* event)
++{
++    m_dragging = false;
++    m_resizeEdge = NoEdge;
++    event->accept();
++}
++
++void OcrPanel::mouseDoubleClickEvent(QMouseEvent* event)
++{
++    // 双击标题栏 = 最小化/恢复；文本区双击选词仍由 QPlainTextEdit 处理
++    if (event->button() == Qt::LeftButton &&
++        m_header->geometry().contains(event->pos())) {
++        setMinimized(!m_minimized);
++    }
++    event->accept();
++}
++
++void OcrPanel::contextMenuEvent(QContextMenuEvent* event)
++{
++    // 文本框有自己的自定义菜单；面板其余区域不弹画布菜单
++    event->accept();
++}
++
+ void OcrPanel::showLoading(const QRect& selection)
+ {
++    setMinimized(false);
+     m_textEdit->clear();
+     m_copyButton->setEnabled(false);
+     m_statusLabel->setText(tr2("识别中…", "Recognizing…"));
+-    int w = qBound(260, selection.width(), 400);
+-    int h = qBound(200, selection.height(), 400);
++    // 尺寸钳制：面板必须完整落在钉图区域内（含上下左右 4px 边距）
++    int w = qBound(240, qMin(selection.width() - 8, 400), 400);
++    int h = qBound(160, qMin(selection.height() - 8, 400), 400);
+     resize(w, h);
+     positionBeside(selection);
+     show();
+@@ -114,13 +365,34 @@ void OcrPanel::showFailure(const QString& detail)
+     raise();
+ }
+ 
+-void OcrPanel::positionBeside(const QRect& selection)
++void OcrPanel::setMinimized(bool minimized)
+ {
+-    QWidget* parent = parentWidget();
+-    if (!parent) {
++    if (m_minimized == minimized) {
+         return;
+     }
+-    const QRect area = parent->rect();
++    m_minimized = minimized;
++    if (m_minimized) {
++        m_expandedSize = size();
++        m_body->hide();
++        // 只留标题条（上下边距 8+10 + 标题行高）
++        resize(width(), m_header->sizeHint().height() + 18);
++    } else {
++        m_body->show();
++        resize(m_expandedSize.isValid() ? m_expandedSize : QSize(320, 300));
++    }
++}
++
++void OcrPanel::positionBeside(const QRect& selection)
++{
++    // 可用区域：作为截图画布子控件时用画布矩形；顶层窗口（钉图模式）时用屏幕
++    QRect area;
++    if (parentWidget()) {
++        area = parentWidget()->rect();
++    } else {
++        auto* scr = screen();
++        area = scr ? scr->availableGeometry()
++                   : QRect(QPoint(0, 0), QSize(1920, 1080));
++    }
+     int x = selection.right() + 1 + 12;
+     if (x + width() > area.right() - 4) {
+         // 右侧放不下时翻到选区左侧
+diff --git a/src/widgets/capture/ocrpanel.h b/src/widgets/capture/ocrpanel.h
+index 57837817..90895d80 100644
+--- a/src/widgets/capture/ocrpanel.h
++++ b/src/widgets/capture/ocrpanel.h
+@@ -8,6 +8,7 @@
+ class QLabel;
+ class QPlainTextEdit;
+ class QPushButton;
++class QToolButton;
+ 
+ // Panel shown beside the selection with OCR results (WeChat/QQ style):
+ // selectable text plus a copy button.
+@@ -29,12 +30,37 @@ public:
+ 
+ protected:
+     void paintEvent(QPaintEvent* event) override;
++    // 面板及其子控件未消费的输入事件在此 accept，防止冒泡到 CaptureWidget
++    // （否则会触发隐藏面板、取色器、笔刷大小转轮等画布行为）
++    void wheelEvent(QWheelEvent* event) override;
++    void mousePressEvent(QMouseEvent* event) override;
++    void mouseMoveEvent(QMouseEvent* event) override;
++    void mouseReleaseEvent(QMouseEvent* event) override;
++    void mouseDoubleClickEvent(QMouseEvent* event) override;
++    void contextMenuEvent(QContextMenuEvent* event) override;
+ 
+ private:
++    // 命中测试：返回事件位置命中的边缘（Left/Right/Top/Bottom 位或组合），
++    // 用于边缘拉伸调整大小
++    int edgeAt(const QPoint& pos) const;
+     void positionBeside(const QRect& selection);
++    void setMinimized(bool minimized);
+ 
++    QWidget* m_header;
+     QLabel* m_titleLabel;
++    QToolButton* m_minButton;
++    QToolButton* m_closeButton;
++    QWidget* m_body;
+     QPlainTextEdit* m_textEdit;
+     QPushButton* m_copyButton;
+     QLabel* m_statusLabel;
++    bool m_minimized = false;
++    QSize m_expandedSize;
++
++    // 标题栏拖动 + 边缘缩放状态
++    bool m_dragging = false;
++    QPoint m_dragOffset;
++    int m_resizeEdge = 0;
++    QRect m_startGeo;
++    QPoint m_startGlobal;
+ };
+diff --git a/src/widgets/capture/pretoolbar.cpp b/src/widgets/capture/pretoolbar.cpp
+new file mode 100644
+index 00000000..61c883d4
+--- /dev/null
++++ b/src/widgets/capture/pretoolbar.cpp
+@@ -0,0 +1,293 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// SPDX-FileCopyrightText: 2026 flameshot-ocr contributors
++
++#include "pretoolbar.h"
++#include "src/utils/confighandler.h"
++#include "src/utils/pathinfo.h"
++#include "src/widgets/capture/ocrpanel.h"
++#include <QAction>
++#include <QActionGroup>
++#include <QColor>
++#include <QFrame>
++#include <QGraphicsOpacityEffect>
++#include <QHBoxLayout>
++#include <QMenu>
++#include <QPropertyAnimation>
++#include <QToolButton>
++
++namespace
++{
++QString iconFile(const QString& name)
++{
++    return PathInfo::whiteIconPath() + name;
++}
++
++QToolButton* flatButton(QWidget* parent,
++                        const QString& icon,
++                        const QString& tip)
++{
++    auto* button = new QToolButton(parent);
++    button->setIcon(QIcon(iconFile(icon)));
++    button->setToolTip(tip);
++    button->setAutoRaise(true);
++    button->setIconSize(QSize(20, 20));
++    button->setCursor(Qt::PointingHandCursor);
++    return button;
++}
++} // namespace
++
++PreToolbar::PreToolbar(QWidget* parent)
++  : QWidget(parent)
++{
++    setObjectName(QStringLiteral("preToolbar"));
++
++    auto* layout = new QHBoxLayout(this);
++    layout->setContentsMargins(8, 4, 8, 4);
++    layout->setSpacing(2);
++
++    m_selectBtn = flatButton(this, QStringLiteral("cursor-move"),
++                             OcrPanel::tr2("框选截图", "Region select"));
++    m_selectBtn->setCheckable(true);
++    m_selectBtn->setChecked(true);
++    layout->addWidget(m_selectBtn);
++    connect(m_selectBtn, &QToolButton::clicked, this,
++            [this]() { emit selectModeRequested(); });
++
++    m_toolButtons = {
++        { CaptureTool::TYPE_PENCIL, flatButton(this, "pencil",
++                                               OcrPanel::tr2("画笔", "Pen")) },
++        { CaptureTool::TYPE_MARKER, flatButton(this, "marker",
++                                               OcrPanel::tr2("荧光笔", "Marker")) },
++        { CaptureTool::TYPE_PIXELATE, flatButton(this, "pixelate",
++                                                 OcrPanel::tr2("马赛克", "Pixelate")) },
++        { CaptureTool::TYPE_ARROW, flatButton(this, "arrow-bottom-left",
++                                              OcrPanel::tr2("箭头", "Arrow")) },
++        { CaptureTool::TYPE_RECTANGLE, flatButton(this, "rectangle",
++                                                  OcrPanel::tr2("矩形", "Rectangle")) },
++        { CaptureTool::TYPE_CIRCLE, flatButton(this, "circle-outline",
++                                               OcrPanel::tr2("椭圆", "Ellipse")) },
++        { CaptureTool::TYPE_CIRCLECOUNT,
++          flatButton(this, "circlecount-outline",
++                     OcrPanel::tr2("序号标记（递增编号）",
++                                   "Numbered marker (increments)")) },
++    };
++    for (auto& entry : m_toolButtons) {
++        entry.second->setCheckable(true);
++        layout->addWidget(entry.second);
++        const CaptureTool::Type type = entry.first;
++        connect(entry.second, &QToolButton::clicked, this,
++                [this, type]() { emit toolRequested(type); });
++    }
++
++    // 形状填充开关：选中=实心填充，未选=只显示边框（矩形/椭圆）
++    m_fillBtn = flatButton(
++      this, "shape-fill",
++      OcrPanel::tr2("形状填充：选中 = 实心，未选 = 只显示边框",
++                    "Shape fill: on = solid, off = outline only"));
++    m_fillBtn->setObjectName(QStringLiteral("preFillBtn"));
++    m_fillBtn->setCheckable(true);
++    m_fillBtn->setChecked(ConfigHandler().shapeFill());
++    connect(m_fillBtn, &QToolButton::toggled, this, [this](bool checked) {
++        ConfigHandler().setShapeFill(checked);
++        emit fillToggled();
++    });
++    layout->addWidget(m_fillBtn);
++
++    auto* separator1 = new QFrame(this);
++    separator1->setFrameShape(QFrame::VLine);
++    separator1->setStyleSheet(QStringLiteral("color: #3f3f46;"));
++    layout->addWidget(separator1);
++
++    // 取色：点击进入取色模式（按所选格式自动复制）；旁边的 ▾ 切换格式
++    auto* grabButton = flatButton(this, "colorize",
++                                  OcrPanel::tr2("拾取颜色（自动复制）",
++                                                "Pick color (auto copy)"));
++    connect(grabButton, &QToolButton::clicked, this,
++            [this]() { emit colorGrabRequested(); });
++    layout->addWidget(grabButton);
++
++    auto* grabMenu = new QMenu(this);
++    auto* hexAction = grabMenu->addAction(
++      OcrPanel::tr2("十六进制 (#RRGGBB)", "Hex (#RRGGBB)"));
++    hexAction->setCheckable(true);
++    auto* rgbAction = grabMenu->addAction(
++      OcrPanel::tr2("RGB (r, g, b)", "RGB (r, g, b)"));
++    rgbAction->setCheckable(true);
++    auto* formatGroup = new QActionGroup(grabMenu);
++    formatGroup->addAction(hexAction);
++    formatGroup->addAction(rgbAction);
++    const bool rgb = ConfigHandler().colorPickFormat() == QLatin1String("rgb");
++    rgbAction->setChecked(rgb);
++    hexAction->setChecked(!rgb);
++    connect(hexAction, &QAction::triggered, this, []() {
++        ConfigHandler().setColorPickFormat(QStringLiteral("hex"));
++    });
++    connect(rgbAction, &QAction::triggered, this, []() {
++        ConfigHandler().setColorPickFormat(QStringLiteral("rgb"));
++    });
++    auto* grabFormatButton = new QToolButton(this);
++    grabFormatButton->setText(QStringLiteral("▾"));
++    grabFormatButton->setToolTip(
++      OcrPanel::tr2("复制格式", "Copy format"));
++    grabFormatButton->setAutoRaise(true);
++    grabFormatButton->setFixedWidth(18);
++    grabFormatButton->setCursor(Qt::PointingHandCursor);
++    grabFormatButton->setMenu(grabMenu);
++    grabFormatButton->setPopupMode(QToolButton::InstantPopup);
++    layout->addWidget(grabFormatButton);
++
++    // 画笔颜色（下拉调色板）
++    m_colorBtn = new QToolButton(this);
++    m_colorBtn->setToolTip(OcrPanel::tr2("画笔颜色", "Pen color"));
++    m_colorBtn->setAutoRaise(true);
++    m_colorBtn->setCursor(Qt::PointingHandCursor);
++    m_drawColor = ConfigHandler().drawColor();
++    setDrawColorPreview(m_drawColor);
++    auto* colorMenu = new QMenu(m_colorBtn);
++    const QVector<QPair<QString, QColor>> colors = {
++        { OcrPanel::tr2("红色", "Red"), QColor(255, 59, 48) },
++        { OcrPanel::tr2("黄色", "Yellow"), QColor(255, 204, 0) },
++        { OcrPanel::tr2("绿色", "Green"), QColor(52, 199, 89) },
++        { OcrPanel::tr2("青色", "Cyan"), QColor(0, 199, 190) },
++        { OcrPanel::tr2("蓝色", "Blue"), QColor(0, 122, 255) },
++        { OcrPanel::tr2("紫色", "Purple"), QColor(175, 82, 222) },
++        { OcrPanel::tr2("黑色", "Black"), QColor(17, 17, 17) },
++        { OcrPanel::tr2("白色", "White"), QColor(255, 255, 255) },
++    };
++    for (const auto& entry : colors) {
++        QPixmap swatch(14, 14);
++        swatch.fill(entry.second);
++        QAction* action = colorMenu->addAction(QIcon(swatch), entry.first);
++        connect(action, &QAction::triggered, this, [this, entry]() {
++            m_drawColor = entry.second;
++            setDrawColorPreview(entry.second);
++            emit drawColorChanged(entry.second);
++        });
++    }
++    m_colorBtn->setMenu(colorMenu);
++    m_colorBtn->setPopupMode(QToolButton::InstantPopup);
++    layout->addWidget(m_colorBtn);
++
++    auto* separator2 = new QFrame(this);
++    separator2->setFrameShape(QFrame::VLine);
++    separator2->setStyleSheet(QStringLiteral("color: #3f3f46;"));
++    layout->addWidget(separator2);
++
++    // 撤销 / 重做 / 橡皮擦
++    auto* undoButton = flatButton(this, "undo-variant",
++                                  OcrPanel::tr2("撤销", "Undo"));
++    connect(undoButton, &QToolButton::clicked, this,
++            [this]() { emit undoRequested(); });
++    layout->addWidget(undoButton);
++
++    auto* redoButton = flatButton(this, "redo-variant",
++                                  OcrPanel::tr2("重做", "Redo"));
++    connect(redoButton, &QToolButton::clicked, this,
++            [this]() { emit redoRequested(); });
++    layout->addWidget(redoButton);
++
++    m_eraserBtn = flatButton(this, "delete",
++                             OcrPanel::tr2("橡皮擦（点击标注删除）",
++                                           "Eraser (click an annotation to remove it)"));
++    m_eraserBtn->setCheckable(true);
++    connect(m_eraserBtn, &QToolButton::clicked, this,
++            [this]() { emit eraserRequested(); });
++    layout->addWidget(m_eraserBtn);
++
++    auto* separator3 = new QFrame(this);
++    separator3->setFrameShape(QFrame::VLine);
++    separator3->setStyleSheet(QStringLiteral("color: #3f3f46;"));
++    layout->addWidget(separator3);
++
++    auto* fullscreenButton = flatButton(this, "accept",
++                                        OcrPanel::tr2("截取全屏并复制",
++                                                      "Fullscreen to clipboard"));
++    connect(fullscreenButton, &QToolButton::clicked, this,
++            [this]() { emit fullscreenCopyRequested(); });
++    layout->addWidget(fullscreenButton);
++
++    auto* saveButton = flatButton(this, "content-save",
++                                  OcrPanel::tr2("保存全屏截图",
++                                                "Save fullscreen capture"));
++    connect(saveButton, &QToolButton::clicked, this,
++            [this]() { emit saveRequested(); });
++    layout->addWidget(saveButton);
++
++    auto* settingsButton = flatButton(this, "config",
++                                      OcrPanel::tr2("设置", "Settings"));
++    connect(settingsButton, &QToolButton::clicked, this,
++            [this]() { emit settingsRequested(); });
++    layout->addWidget(settingsButton);
++
++    const QString accent = ConfigHandler().uiColor().name();
++    setStyleSheet(QStringLiteral(
++      "#preToolbar { background-color: #1a1a1fee; "
++      "border: 1px solid #3f3f46; border-radius: 10px; }"
++      "#preToolbar QToolButton { color: #d6d6dc; background: transparent; "
++      "border: none; border-radius: 6px; padding: 4px; }"
++      "#preToolbar QToolButton:hover { background: #3f3f46; }"
++      "#preToolbar QToolButton:checked { background: %1; color: #ffffff; }"
++      "#preToolbar QToolButton:pressed { background: %1; color: #ffffff; }")
++      .arg(accent));
++}
++
++void PreToolbar::setToolChecked(CaptureTool::Type type)
++{
++    m_selectBtn->setChecked(type == CaptureTool::NONE);
++    for (auto& entry : m_toolButtons) {
++        entry.second->setChecked(entry.first == type);
++    }
++    if (type != CaptureTool::NONE) {
++        setEraserChecked(false);
++    }
++}
++
++void PreToolbar::setEraserChecked(bool checked)
++{
++    m_eraserBtn->setChecked(checked);
++    if (checked) {
++        m_selectBtn->setChecked(false);
++        for (auto& entry : m_toolButtons) {
++            entry.second->setChecked(false);
++        }
++    }
++}
++
++void PreToolbar::setDrawColorPreview(const QColor& color)
++{
++    QPixmap swatch(18, 18);
++    swatch.fill(color);
++    m_colorBtn->setIcon(QIcon(swatch));
++    m_colorBtn->setIconSize(QSize(18, 18));
++}
++
++void PreToolbar::showEvent(QShowEvent* event)
++{
++    QWidget::showEvent(event);
++    // flameshot-ocr: 渐入，避免工具条突然弹出
++    auto* effect = graphicsEffect()
++                     ? qobject_cast<QGraphicsOpacityEffect*>(graphicsEffect())
++                     : nullptr;
++    if (!effect) {
++        effect = new QGraphicsOpacityEffect(this);
++        setGraphicsEffect(effect);
++    }
++    effect->setOpacity(0.0);
++    auto* fade = new QPropertyAnimation(effect, "opacity", this);
++    fade->setDuration(120);
++    fade->setStartValue(0.0);
++    fade->setEndValue(1.0);
++    fade->setEasingCurve(QEasingCurve::InOutQuad);
++    connect(fade, &QPropertyAnimation::finished, fade,
++            &QPropertyAnimation::deleteLater);
++    fade->start(QAbstractAnimation::DeleteWhenStopped);
++}
++
++void PreToolbar::paintEvent(QPaintEvent*)
++{
++    QPainter painter(this);
++    painter.setRenderHint(QPainter::Antialiasing);
++    painter.setPen(QPen(QColor(63, 63, 70), 1));
++    painter.setBrush(QColor(26, 26, 31, 245));
++    painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 10, 10);
++}
+diff --git a/src/widgets/capture/pretoolbar.h b/src/widgets/capture/pretoolbar.h
+new file mode 100644
+index 00000000..9e672e4a
+--- /dev/null
++++ b/src/widgets/capture/pretoolbar.h
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// SPDX-FileCopyrightText: 2026 flameshot-ocr contributors
++
++#pragma once
++
++#include "src/tools/capturetool.h"
++#include <QWidget>
++
++class QToolButton;
++
++// Win11 风格的预选区悬浮工具条：截图激活后立即显示在屏幕顶部中央，
++// 开始拖动/绘制时隐藏，松开后按状态重现。取色结果按所选格式自动复制。
++class PreToolbar : public QWidget
++{
++    Q_OBJECT
++public:
++    explicit PreToolbar(QWidget* parent = nullptr);
++
++    // NONE = 框选模式（与外部状态同步勾选态）
++    void setToolChecked(CaptureTool::Type type);
++    void setEraserChecked(bool checked);
++    void setDrawColorPreview(const QColor& color);
++
++signals:
++    void selectModeRequested();
++    void toolRequested(CaptureTool::Type type);
++    void drawColorChanged(const QColor& color);
++    void colorGrabRequested();
++    void fullscreenCopyRequested();
++    void saveRequested();
++    void settingsRequested();
++    void undoRequested();
++    void redoRequested();
++    void eraserRequested();
++    void fillToggled();
++
++protected:
++    void paintEvent(QPaintEvent* event) override;
++    void showEvent(QShowEvent* event) override;
++
++private:
++    QToolButton* m_selectBtn = nullptr;
++    QVector<QPair<CaptureTool::Type, QToolButton*>> m_toolButtons;
++    QToolButton* m_colorBtn = nullptr;
++    QToolButton* m_eraserBtn = nullptr;
++    QToolButton* m_fillBtn = nullptr;
++    QColor m_drawColor;
++};

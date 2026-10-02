@@ -158,6 +158,32 @@ BusyCursor=false → `m_type = NoFeedback`（startupfeedback.cpp:153），
 此后无论谁铸币都不再绘制齿轮。等价于 系统设置 → 通知 → 应用启动反馈
 设为「无」。
 
+## 代码审查修复记录 · 第二轮（2026-10-02，复审报告 v2）
+
+复审确认上一轮的泄漏修复有效（QProcess/QTemporaryFile 生命周期正确），本轮按
+新报告落地以下改动（验证：自测 41 项全 PASS，含新增取消语义断言；ASan 无
+use-after-free、泄漏全部在 fontconfig/freetype 平台层；cppcheck 0 警告）：
+
+| 报告问题 | 修复 |
+|---|---|
+| **[高] §2.2/§3 OCR 无取消/超时，世代计数只丢结果不停止进程** | `OcrHelper::run` 升级为返回 `OcrTask` 句柄：`cancel()` 两阶段终止（terminate→1.5s 宽限→kill）且不再回调；30s 超时按失败处理；`CaptureWidget`/`PinWidget` 各持 `QPointer<OcrTask>`，新任务发起先 cancel 旧任务——同一界面最多一个活动引擎进程。新增自测断言 25：连续两次 OCR 后活动 tesseract ≤1（实测=1） |
+| **[高] §4 `ensureKeepAboveRule` 同步 qdbus 最坏阻塞 GUI 6 秒** | 重写为全异步状态机（QProcess finished 回调链，零 waitForFinished），失败回 0 态由下一个钉图自动重试；`done` 只在确认加载后置位 |
+| **[中] §5.1 `renderShapes` 每次 repaint 复制整个形状容器** | 提取 `renderOneShape`，直接遍历原容器 + 单独渲染 `m_current` |
+| **[中] §6 Pixelate 每次 repaint 重新缩放整块图像** | `PinShape` 增加 mutable 像素缓存，按（底图版本 rev/区域尺寸/块大小）失效；旋转/换底图时 `invalidateBaseCache()` 全量失效 |
+| **[中] §7 `compositedPixmap` 先生成整张透明 overlay** | 新增 `paintAnnotations(QPainter&)`，标注直接画到输出 pixmap（4K 省一张 ~32MB 临时 QImage） |
+| **[中] §8 Pencil/Marker 点数无上限** | 点抽稀（距上点 ≥1.5 基础像素才记录）+ 收笔补记终点；高采样轨迹点数降一个数量级 |
+| **[中] §9 `shapeRect` 对大笔画 O(点数) 扫描** | `PinShape` 缓存几何 bbox（mutable），橡皮擦命中从 O(形状×点) 降为首次计算后查表；旋转时整体失效 |
+| **[低] §10 临时文件句柄** | `flush()` 后 `close()` 再启动引擎 |
+| **[低] §12 `%i` 替换可被路径空格二次拆分** | 先 `splitCommand` 再做 token 内替换 |
+| **[低] §11 输出无上限** | stdout 截断至 8MB 并标注 |
+| **[低] §14 小钉图面板被强制 240×160 顶出父窗** | 下限跟随钉图（min=钉图-8） |
+| **[低] §16 重复 `#include <QActionGroup>`** | 删除 |
+| **（本轮自查发现）OcrTask 完成后析构读悬空 `m_proc`** | `finish()` 里 `deleteLater` 后立即置空——coredump 定位：任务正常完成后钉图销毁触发 `~OcrTask` 读已释放内存，偶发段错误 |
+
+未实施（报告 §15，标注为长期优化方向）：`drawToolsData()` 的 dirty-rect /
+annotation layer cache——对象缩放热路径已有 `m_resizeBase` 预烘焙，全量重绘
+仅在低频路径发生，收益/风险比暂不划算。
+
 ## 许可
 
 与上游一致：GPL-3.0-or-later。

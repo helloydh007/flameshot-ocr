@@ -6,6 +6,7 @@
 #include <QFontMetrics>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -127,13 +128,17 @@ void PinAnnotator::pushCurrentToRedo(int index)
 
 void PinAnnotator::applyRotateRight(int oldWidth, int oldHeight)
 {
-    Q_UNUSED(oldWidth)
+    Q_UNUSED(oldHeight)
     // QTransform().rotate(90) 的映射：(x, y) -> (oldHeight - y, x)
     for (PinShape& s : m_shapes) {
         for (QPointF& p : s.points) {
             p = QPointF(oldHeight - p.y(), p.x());
         }
+        // 旋转后点集变化：bbox 缓存与马赛克像素缓存全部失效
+        s.boundsValid = false;
+        s.pixelateCacheRev = -1;
     }
+    invalidateBaseCache();
     update();
 }
 
@@ -145,7 +150,10 @@ void PinAnnotator::applyRotateLeft(int oldWidth, int oldHeight)
         for (QPointF& p : s.points) {
             p = QPointF(p.y(), oldWidth - p.x());
         }
+        s.boundsValid = false;
+        s.pixelateCacheRev = -1;
     }
+    invalidateBaseCache();
     update();
 }
 
@@ -176,9 +184,20 @@ QRectF PinAnnotator::shapeRect(const PinShape& s) const
         case Rectangle:
         case Ellipse:
         case Line: {
+            // 审查报告 §9：bbox 缓存——提交后的形状几何不再变化（仅旋转
+            // 时整体失效），橡皮擦的 O(形状数×点数) 扫描降为首次计算后
+            // 的 O(形状数) 查表；m_current（绘制中）不缓存
+            if (&s != &m_current && s.boundsValid) {
+                return s.cachedBounds.adjusted(-s.width, -s.width, s.width,
+                                               s.width);
+            }
             QRectF r(s.points.first(), s.points.first());
             for (const QPointF& p : s.points) {
                 r = r.united(QRectF(p, p));
+            }
+            if (&s != &m_current) {
+                s.cachedBounds = r;
+                s.boundsValid = true;
             }
             return r.adjusted(-s.width, -s.width, s.width, s.width);
         }
@@ -219,142 +238,162 @@ void PinAnnotator::commitCurrent()
     }
 }
 
+// 单个形状渲染（renderShapes 的循环体；const：缓存写入走 mutable 成员）
+void PinAnnotator::renderOneShape(QPainter& painter, const PinShape& s) const
+{
+    if (s.type == Text) {
+        QFont font;
+        font.setPixelSize(TEXT_FONT_PX);
+        painter.setFont(font);
+        painter.setPen(QPen(s.color));
+        const QString shown =
+          s.text + (m_textEditing ? QStringLiteral("|") : QString());
+        painter.drawText(s.points.first() + QPointF(0, TEXT_FONT_PX * 0.8),
+                         shown);
+        return;
+    }
+    if (s.type == Number) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QBrush(s.color));
+        painter.drawEllipse(s.points.first(), NUMBER_RADIUS, NUMBER_RADIUS);
+        QFont font;
+        font.setPixelSize(NUMBER_RADIUS + 6);
+        font.setBold(true);
+        painter.setFont(font);
+        painter.setPen(QPen(Qt::white));
+        painter.drawText(
+          QRectF(s.points.first().x() - NUMBER_RADIUS,
+                 s.points.first().y() - NUMBER_RADIUS,
+                 NUMBER_RADIUS * 2, NUMBER_RADIUS * 2),
+          Qt::AlignCenter, QString::number(s.number));
+        return;
+    }
+    QPen pen(s.color, s.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    if (s.type == Marker) {
+        QColor c = s.color;
+        c.setAlphaF(MARKER_ALPHA / 255.0);
+        pen.setColor(c);
+        pen.setWidthF(s.width * 4.0);
+    }
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+
+    switch (s.type) {
+        case Pencil:
+        case Marker:
+            if (s.points.size() >= 2) {
+                for (int i = 1; i < s.points.size(); ++i) {
+                    painter.drawLine(s.points[i - 1], s.points[i]);
+                }
+            } else if (!s.points.isEmpty()) {
+                painter.drawPoint(s.points.first());
+            }
+            break;
+        case Line:
+            if (s.points.size() >= 2) {
+                painter.drawLine(s.points.first(), s.points.last());
+            }
+            break;
+        case Arrow:
+            if (s.points.size() >= 2) {
+                const QPointF from = s.points.first();
+                const QPointF to = s.points.last();
+                painter.drawLine(from, to);
+                const qreal dx = to.x() - from.x();
+                const qreal dy = to.y() - from.y();
+                const qreal len = std::hypot(dx, dy);
+                if (len > 1) {
+                    const qreal headLen = qMax(ARROW_HEAD, s.width * 3.0);
+                    const qreal ux = dx / len;
+                    const qreal uy = dy / len;
+                    const qreal px = -uy;
+                    const qreal py = ux;
+                    QPolygonF head;
+                    head << to
+                         << QPointF(to.x() - headLen * ux + headLen * 0.4 * px,
+                                    to.y() - headLen * uy + headLen * 0.4 * py)
+                         << QPointF(to.x() - headLen * ux - headLen * 0.4 * px,
+                                    to.y() - headLen * uy - headLen * 0.4 * py);
+                    painter.setBrush(s.color);
+                    painter.drawPolygon(head);
+                }
+            }
+            break;
+        case Rectangle:
+            if (s.points.size() >= 2) {
+                painter.setPen(QPen(s.color, qMax(2, s.width), Qt::SolidLine,
+                                    Qt::SquareCap, Qt::RoundJoin));
+                painter.setBrush(s.filled ? QBrush(s.color) : Qt::NoBrush);
+                painter.drawRect(
+                  QRectF(s.points.first(), s.points.last()).normalized());
+            }
+            break;
+        case Ellipse:
+            if (s.points.size() >= 2) {
+                painter.setBrush(s.filled ? QBrush(s.color) : Qt::NoBrush);
+                painter.drawEllipse(
+                  QRectF(s.points.first(), s.points.last()).normalized());
+            }
+            break;
+        case Pixelate:
+            if (s.points.size() >= 2 && m_basePixmap &&
+                !m_basePixmap->isNull()) {
+                const QRectF r =
+                  QRectF(s.points.first(), s.points.last()).normalized();
+                const QRect src =
+                  r.toRect().intersected(m_basePixmap->rect());
+                if (!src.isEmpty()) {
+                    const int block = qMax(6, s.width * 4);
+                    // 审查报告 §6：马赛克结果缓存——提交后的形状在
+                    // 后续 repaint（移动/透明度/其它标注编辑）中直接
+                    // 复用像素，仅当底图版本/区域尺寸/块大小变化时重建
+                    if (s.pixelateCacheRev != m_baseRev ||
+                        s.pixelateCacheSize != src.size() ||
+                        s.pixelateCacheBlock != block ||
+                        s.pixelateCache.isNull()) {
+                        const QSize smallSize(qMax(1, src.width() / block),
+                                              qMax(1, src.height() / block));
+                        const QImage region =
+                          m_basePixmap->toImage().copy(src);
+                        s.pixelateCache =
+                          region.scaled(smallSize, Qt::IgnoreAspectRatio,
+                                        Qt::FastTransformation)
+                            .scaled(src.size(), Qt::IgnoreAspectRatio,
+                                    Qt::FastTransformation);
+                        s.pixelateCacheRev = m_baseRev;
+                        s.pixelateCacheSize = src.size();
+                        s.pixelateCacheBlock = block;
+                    }
+                    painter.drawImage(src, s.pixelateCache);
+                }
+            }
+            break;
+        default:
+            break;
+    }
+}
+
 void PinAnnotator::renderShapes(QPainter& painter, qreal scale) const
 {
     painter.setRenderHint(QPainter::Antialiasing);
     painter.save();
     painter.scale(scale, scale);
 
-    QVector<PinShape> all = m_shapes;
-    if (m_drawing || m_textEditing) {
-        all.append(m_current);
+    // 审查报告 §5.1：直接遍历原容器，不再每次 repaint 复制整个
+    // QVector<PinShape>（旧实现 m_shapes → all 的拷贝是绘制热路径上
+    // 最稳定的无谓开销）
+    for (const PinShape& s : m_shapes) {
+        renderOneShape(painter, s);
     }
-    for (const PinShape& s : all) {
-        if (s.type == Text) {
-            QFont font;
-            font.setPixelSize(TEXT_FONT_PX);
-            painter.setFont(font);
-            painter.setPen(QPen(s.color));
-            const QString shown =
-              s.text + (m_textEditing ? QStringLiteral("|") : QString());
-            painter.drawText(s.points.first() +
-                               QPointF(0, TEXT_FONT_PX * 0.8),
-                             shown);
-            continue;
-        }
-        if (s.type == Number) {
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(QBrush(s.color));
-            painter.drawEllipse(s.points.first(), NUMBER_RADIUS,
-                                NUMBER_RADIUS);
-            QFont font;
-            font.setPixelSize(NUMBER_RADIUS + 6);
-            font.setBold(true);
-            painter.setFont(font);
-            painter.setPen(QPen(Qt::white));
-            painter.drawText(
-              QRectF(s.points.first().x() - NUMBER_RADIUS,
-                     s.points.first().y() - NUMBER_RADIUS,
-                     NUMBER_RADIUS * 2, NUMBER_RADIUS * 2),
-              Qt::AlignCenter, QString::number(s.number));
-            continue;
-        }
-        QPen pen(s.color, s.width, Qt::SolidLine, Qt::RoundCap,
-                 Qt::RoundJoin);
-        if (s.type == Marker) {
-            QColor c = s.color;
-            c.setAlphaF(MARKER_ALPHA / 255.0);
-            pen.setColor(c);
-            pen.setWidthF(s.width * 4.0);
-        }
-        painter.setPen(pen);
-        painter.setBrush(Qt::NoBrush);
-
-        switch (s.type) {
-            case Pencil:
-            case Marker:
-                if (s.points.size() >= 2) {
-                    for (int i = 1; i < s.points.size(); ++i) {
-                        painter.drawLine(s.points[i - 1], s.points[i]);
-                    }
-                } else if (!s.points.isEmpty()) {
-                    painter.drawPoint(s.points.first());
-                }
-                break;
-            case Line:
-                if (s.points.size() >= 2) {
-                    painter.drawLine(s.points.first(), s.points.last());
-                }
-                break;
-            case Arrow:
-                if (s.points.size() >= 2) {
-                    const QPointF from = s.points.first();
-                    const QPointF to = s.points.last();
-                    painter.drawLine(from, to);
-                    const qreal dx = to.x() - from.x();
-                    const qreal dy = to.y() - from.y();
-                    const qreal len = std::hypot(dx, dy);
-                    if (len > 1) {
-                        const qreal headLen =
-                          qMax(ARROW_HEAD, s.width * 3.0);
-                        const qreal ux = dx / len;
-                        const qreal uy = dy / len;
-                        const qreal px = -uy;
-                        const qreal py = ux;
-                        QPolygonF head;
-                        head << to
-                             << QPointF(to.x() - headLen * ux + headLen * 0.4 * px,
-                                        to.y() - headLen * uy + headLen * 0.4 * py)
-                             << QPointF(to.x() - headLen * ux - headLen * 0.4 * px,
-                                        to.y() - headLen * uy - headLen * 0.4 * py);
-                        painter.setBrush(s.color);
-                        painter.drawPolygon(head);
-                    }
-                }
-                break;
-            case Rectangle:
-                if (s.points.size() >= 2) {
-                    painter.setPen(QPen(s.color, qMax(2, s.width),
-                                        Qt::SolidLine, Qt::SquareCap,
-                                        Qt::RoundJoin));
-                    painter.setBrush(s.filled ? QBrush(s.color)
-                                              : Qt::NoBrush);
-                    painter.drawRect(QRectF(s.points.first(), s.points.last()).normalized());
-                }
-                break;
-            case Ellipse:
-                if (s.points.size() >= 2) {
-                    painter.setBrush(s.filled ? QBrush(s.color)
-                                              : Qt::NoBrush);
-                    painter.drawEllipse(QRectF(s.points.first(), s.points.last()).normalized());
-                }
-                break;
-            case Pixelate:
-                if (s.points.size() >= 2 && m_basePixmap &&
-                    !m_basePixmap->isNull()) {
-                    const QRectF r =
-                      QRectF(s.points.first(), s.points.last()).normalized();
-                    QRect src = r.toRect().intersected(m_basePixmap->rect());
-                    if (!src.isEmpty()) {
-                        const int block = qMax(6, s.width * 4);
-                        const QSize smallSize(
-                          qMax(1, src.width() / block),
-                          qMax(1, src.height() / block));
-                        const QImage region = m_basePixmap->toImage().copy(src);
-                        const QImage pixelated =
-                          region.scaled(smallSize, Qt::IgnoreAspectRatio,
-                                        Qt::FastTransformation)
-                            .scaled(src.size(), Qt::IgnoreAspectRatio,
-                                    Qt::FastTransformation);
-                        painter.drawImage(r, pixelated);
-                    }
-                }
-                break;
-            default:
-                break;
-        }
+    if (m_drawing || m_textEditing) {
+        renderOneShape(painter, m_current);
     }
     painter.restore();
+}
+
+void PinAnnotator::paintAnnotations(QPainter& painter) const
+{
+    renderShapes(painter, 1.0);
 }
 
 void PinAnnotator::paintEvent(QPaintEvent*)
@@ -426,7 +465,12 @@ void PinAnnotator::mouseMoveEvent(QMouseEvent* event)
     if (m_drawing) {
         const QPointF p = toBase(event->pos());
         if (m_current.type == Pencil || m_current.type == Marker) {
-            m_current.points.append(p);
+            // 审查报告 §8：点抽稀——高采样率鼠标轨迹仅在距上点
+            // ≥1.5 基础像素时记录，长笔画点数降一个数量级且视觉无损
+            if (m_current.points.isEmpty() ||
+                QLineF(m_current.points.last(), p).length() >= 1.5) {
+                m_current.points.append(p);
+            }
         } else if (m_current.points.size() >= 2) {
             m_current.points[1] = p;
         } else if (!m_current.points.isEmpty()) {
@@ -445,6 +489,14 @@ void PinAnnotator::mouseMoveEvent(QMouseEvent* event)
 void PinAnnotator::mouseReleaseEvent(QMouseEvent* event)
 {
     if (m_drawing) {
+        // 抽稀补偿：收笔时补记最终位置，保证线条终点与指针一致
+        if (m_current.type == Pencil || m_current.type == Marker) {
+            const QPointF p = toBase(event->pos());
+            if (m_current.points.isEmpty() ||
+                QLineF(m_current.points.last(), p).length() > 0.01) {
+                m_current.points.append(p);
+            }
+        }
         commitCurrent();
     }
     event->accept();

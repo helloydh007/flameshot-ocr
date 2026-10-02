@@ -15,7 +15,6 @@
 #include "src/widgets/capture/ocrpanel.h"
 
 #include <QActionGroup>
-#include <QActionGroup>
 #include <QFrame>
 #include <QLabel>
 #include <QMenu>
@@ -589,13 +588,35 @@ bool PinWidget::event(QEvent* event)
 // flameshot-ocr: KWin Wayland 会忽略 Qt 的 WindowStaysOnTopHint，
 // 通过常驻 KWin 脚本（windowAdded 钩子）强制 flameshot-pin 窗口置顶。
 // 脚本安装到 ~/.local/share/flameshot-ocr/，仅首次加载，此后新钉图自动置顶。
+namespace
+{
+// KeepAbove 脚本异步加载状态机（审查报告 §4）：
+// 0 = 未开始或上次失败（可重试），1 = 进行中，2 = 已确认加载。
+// 全部 QProcess 走 finished 回调，GUI 线程零阻塞（旧实现同步
+// waitForFinished(3000)×2，首个钉图最坏卡 6 秒）。
+int s_keepAboveState = 0;
+
+QObject* keepAboveOwner()
+{
+    static QObject* owner = [] {
+        auto* o = new QObject(qApp);
+        return o;
+    }();
+    return owner;
+}
+
+void keepAboveFail(QProcess* proc)
+{
+    s_keepAboveState = 0; // 回到未开始态：下一个钉图自动重试
+    proc->deleteLater();
+}
+} // namespace
+
 void PinWidget::ensureKeepAboveRule()
 {
-    static bool done = false;
-    if (done) {
-        return;
+    if (s_keepAboveState != 0) {
+        return; // 已加载(2)或已有一次加载在途(1)
     }
-    done = true;
     const QString scriptDir =
       QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
       QStringLiteral("/flameshot-ocr");
@@ -618,37 +639,75 @@ void PinWidget::ensureKeepAboveRule()
         }
     }
     if (!scriptFile.exists()) {
-        return;
+        return; // 磁盘异常：保持 0 态，下次重试
     }
-    // 已加载则无需重复
-    QProcess isLoaded;
-    isLoaded.start(
+    s_keepAboveState = 1;
+
+    // 第 1 步：查询脚本是否已加载
+    auto* check = new QProcess(keepAboveOwner());
+    connect(check, &QProcess::errorOccurred, check, [check](auto) {
+        keepAboveFail(check);
+    });
+    connect(
+      check,
+      qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+      check,
+      [check, scriptPath](int code, QProcess::ExitStatus status) mutable {
+          const QString out =
+            QString::fromLocal8Bit(check->readAllStandardOutput()).trimmed();
+          check->deleteLater();
+          if (code != 0 || status != QProcess::NormalExit) {
+              s_keepAboveState = 0;
+              return;
+          }
+          if (out == QLatin1String("true")) {
+              s_keepAboveState = 2;
+              return;
+          }
+          // 第 2 步：加载脚本取编号
+          auto* load = new QProcess(keepAboveOwner());
+          connect(load, &QProcess::errorOccurred, load, [load](auto) {
+              keepAboveFail(load);
+          });
+          connect(
+            load,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            load,
+            [load](int code2, QProcess::ExitStatus status2) mutable {
+                const QString idStr =
+                  QString::fromLocal8Bit(load->readAllStandardOutput())
+                    .trimmed();
+                load->deleteLater();
+                if (code2 != 0 || status2 != QProcess::NormalExit) {
+                    s_keepAboveState = 0;
+                    return;
+                }
+                bool ok = false;
+                const int scriptId = idStr.toInt(&ok);
+                if (!ok || scriptId <= 0) {
+                    s_keepAboveState = 0;
+                    return;
+                }
+                // 第 3 步：run（分离进程，无需等待结果）
+                QProcess::startDetached(
+                  QStringLiteral("qdbus6"),
+                  { QStringLiteral("org.kde.KWin"),
+                    QStringLiteral("/Scripting/Script%1").arg(scriptId),
+                    QStringLiteral("org.kde.kwin.Script.run") });
+                s_keepAboveState = 2; // run 为 fire-and-forget，视作完成
+            });
+          load->start(
+            QStringLiteral("qdbus6"),
+            { QStringLiteral("org.kde.KWin"),
+              QStringLiteral("/Scripting"),
+              QStringLiteral("org.kde.kwin.Scripting.loadScript"),
+              scriptPath });
+      });
+    check->start(
       QStringLiteral("qdbus6"),
       { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
-        QStringLiteral("org.kde.kwin.Scripting.isScriptLoaded"), scriptPath });
-    isLoaded.waitForFinished(3000);
-    if (QString::fromLocal8Bit(isLoaded.readAllStandardOutput())
-          .trimmed() == QStringLiteral("true")) {
-        return;
-    }
-    QProcess load;
-    load.start(QStringLiteral("qdbus6"),
-               { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
-                 QStringLiteral("org.kde.kwin.Scripting.loadScript"),
-                 scriptPath });
-    load.waitForFinished(3000);
-    bool ok = false;
-    const QString reply =
-      QString::fromLocal8Bit(load.readAllStandardOutput()).trimmed();
-    int scriptId = reply.toInt(&ok);
-    if (!ok) {
-        return;
-    }
-    QProcess::startDetached(
-      QStringLiteral("qdbus6"),
-      { QStringLiteral("org.kde.KWin"),
-        QStringLiteral("/Scripting/Script%1").arg(scriptId),
-        QStringLiteral("org.kde.kwin.Script.run") });
+        QStringLiteral("org.kde.kwin.Scripting.isScriptLoaded"),
+        scriptPath });
 }
 
 QWidget* PinWidget::viewWidget() const
@@ -675,9 +734,10 @@ QPixmap PinWidget::compositedPixmap() const
     const_cast<PinAnnotator*>(m_annotator)->commitPendingText();
     QPixmap out = m_pixmap;
     if (m_annotator && m_annotator->hasShapes()) {
-        QImage overlay = m_annotator->renderToImage(m_pixmap.size());
+        // 审查报告 §7：标注直接画到输出 pixmap 上——旧实现先渲染
+        // 一张整屏透明 overlay 再合成，4K 下多一张 ~32MB 临时 QImage
         QPainter painter(&out);
-        painter.drawImage(0, 0, overlay);
+        m_annotator->paintAnnotations(painter);
     }
     return out;
 }
@@ -816,9 +876,14 @@ void PinWidget::runOcr()
         m_ocrPanel = new OcrPanel(this);
     }
     m_ocrPanel->showLoading(rect());
+    // 审查报告 §2.2：世代计数只丢弃旧结果、不停止旧进程——这里先
+    // cancel 旧任务（terminate→宽限→kill），保证最多一个活动引擎进程
+    if (m_ocrTask) {
+        m_ocrTask->cancel();
+    }
     const quint64 generation = ++m_ocrGeneration;
-    OcrHelper::run(m_pixmap.toImage(), this, [this, generation](
-                     bool ok, const QString& result) {
+    m_ocrTask = OcrHelper::run(m_pixmap.toImage(), this,
+                               [this, generation](bool ok, const QString& result) {
         if (generation != m_ocrGeneration || !m_ocrPanel) {
             return; // 已被更新的识别任务取代，或面板已销毁
         }

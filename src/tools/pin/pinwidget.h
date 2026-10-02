@@ -4,7 +4,9 @@
 #pragma once
 
 #include "pinannotator.h"
+#include "src/utils/ocrhelper.h"
 #include <QPair>
+#include <QPointer>
 #include <QVector>
 #include <QWidget>
 
@@ -74,6 +76,9 @@ private:
     OcrPanel* m_ocrPanel = nullptr;
     // 识别任务世代计数：新任务发起后，旧任务的迟到结果直接丢弃
     quint64 m_ocrGeneration = 0;
+    // 当前活动 OCR 任务：新任务发起前先 cancel（终止旧引擎进程），
+    // 保证同一钉图最多只有一个活动 OCR 引擎（审查报告 §2.2）
+    QPointer<OcrTask> m_ocrTask;
     PinAnnotator* m_annotator = nullptr;
     QWidget* m_toolBarRow = nullptr;
     QToolButton* m_colorButton = nullptr;

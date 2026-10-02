@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QColor>
+class QPainter;
 #include <QPoint>
 #include <QPointF>
 #include <QWidget>
@@ -57,7 +58,19 @@ public:
     bool fill() const { return m_fill; }
 
     // 马赛克需要采样底图（指向 PinWidget 的 m_pixmap，旋转时内容原地更新）
-    void setBasePixmap(const QPixmap* base) { m_basePixmap = base; }
+    void setBasePixmap(const QPixmap* base)
+    {
+        m_basePixmap = base;
+        invalidateBaseCache();
+    }
+
+    // 底图内容变化（旋转/换图）时使渲染缓存失效；PinWidget 旋转后调用
+    void invalidateBaseCache() { ++m_baseRev; }
+
+    // 直接把全部标注画到给定 painter 上（目标应为 m_pixmap 尺寸 1:1）。
+    // 复制/保存合成用——替代“先渲染整张透明 overlay 再合成”的旧路径
+    // （审查报告 §7：4K 下省一张 ~32MB 的临时 QImage）
+    void paintAnnotations(QPainter& painter) const;
 
     qreal displayScale() const { return m_displayScale; }
     QString lastShapeText() const
@@ -104,10 +117,21 @@ private:
         QString text;
         int number = 0;
         bool filled = false;
+
+        // 渲染/命中缓存（mutable：renderShapes/shapeRect 为 const）
+        // 马赛克像素缓存：底图版本、区域尺寸、块大小任一变化即重建
+        mutable QImage pixelateCache;
+        mutable QSize pixelateCacheSize;
+        mutable int pixelateCacheBlock = 0;
+        mutable qint64 pixelateCacheRev = -1;
+        // 几何包围盒缓存（不含笔宽 padding；旋转时整体失效）
+        mutable QRectF cachedBounds;
+        mutable bool boundsValid = false;
     };
 
     QRectF shapeRect(const PinShape& s) const;
     void renderShapes(QPainter& painter, qreal scale) const;
+    void renderOneShape(QPainter& painter, const PinShape& s) const;
     QPointF toBase(const QPoint& widgetPos) const;
     void commitCurrent();
     void pushCurrentToRedo(int index);
@@ -125,4 +149,6 @@ private:
     qreal m_displayScale = 1.0;
     QString m_preedit;
     const QPixmap* m_basePixmap = nullptr;
+    // 底图版本号：旋转/换底图时 +1，马赛克缓存据此失效
+    qint64 m_baseRev = 0;
 };

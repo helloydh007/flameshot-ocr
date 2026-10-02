@@ -334,9 +334,13 @@ void OcrPanel::showLoading(const QRect& selection)
     m_textEdit->clear();
     m_copyButton->setEnabled(false);
     m_statusLabel->setText(tr2("识别中…", "Recognizing…"));
-    // 尺寸钳制：面板必须完整落在钉图区域内（含上下左右 4px 边距）
-    int w = qBound(240, qMin(selection.width() - 8, 400), 400);
-    int h = qBound(160, qMin(selection.height() - 8, 400), 400);
+    // 尺寸钳制：面板必须完整落在钉图区域内（含上下左右 4px 边距）。
+    // 审查报告 §14：极小钉图时下限跟随钉图（min=钉图-8），不再强制
+    // 240×160 把面板顶出父窗口
+    const int minW = qMin(240, qMax(0, selection.width() - 8));
+    const int minH = qMin(160, qMax(0, selection.height() - 8));
+    int w = qBound(minW, qMin(selection.width() - 8, 400), 400);
+    int h = qBound(minH, qMin(selection.height() - 8, 400), 400);
     resize(w, h);
     positionBeside(selection);
     show();

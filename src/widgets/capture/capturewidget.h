@@ -18,6 +18,7 @@
 #include "src/tools/capturecontext.h"
 #include "src/tools/capturetool.h"
 #include "src/utils/confighandler.h"
+#include "src/utils/ocrhelper.h"
 #include "src/widgets/capture/magnifierwidget.h"
 #include "src/widgets/capture/selectionwidget.h"
 #include <QMessageBox>
@@ -194,6 +195,9 @@ private:
     // m_ocrGeneration 用于丢弃过期的回调（新任务发起后旧任务的结果不再上屏）
     OcrPanel* m_ocrPanel = nullptr;
     quint64 m_ocrGeneration = 0;
+    // 当前活动 OCR 任务：新任务发起前先 cancel，保证同一截图界面
+    // 最多只有一个活动 OCR 引擎进程（审查报告 §2.2）
+    QPointer<OcrTask> m_ocrTask;
 
     // flameshot-ocr: Win11 风格预选区悬浮工具条 + 取色器
     PreToolbar* m_preToolbar = nullptr;
