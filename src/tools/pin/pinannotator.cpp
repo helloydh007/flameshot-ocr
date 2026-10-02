@@ -393,13 +393,21 @@ void PinAnnotator::renderShapes(QPainter& painter, qreal scale) const
 
 void PinAnnotator::paintAnnotations(QPainter& painter) const
 {
-    renderShapes(painter, 1.0);
+    // 调用方约定：painter 的目标为 m_pixmap（带 DPR 的 QPixmap，其逻辑
+    // 坐标系 = 钉图显示坐标系），因此与 paintEvent 相同用 1/displayScale
+    renderShapes(painter, 1.0 / m_displayScale);
 }
 
 void PinAnnotator::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
-    renderShapes(painter, m_displayScale);
+    // 基础坐标（m_pixmap 原始像素）→ 部件逻辑坐标的换算是 1/displayScale
+    // （displayScale = widget 逻辑像素 × S = base 原始像素，反向即除）。
+    // 【实测修复】旧代码 painter.scale(displayScale) 把基础坐标又放大了
+    // 一遍：125% 缩放屏上墨迹落点 = 光标位置 × 1.25，离钉图左上角越远
+    // 偏得越多（"画笔/序号不跟随鼠标"的根因）。橡皮擦不受影响是因为
+    // 存点与命中都在同一基础坐标系内，自洽掩盖了视觉偏移。
+    renderShapes(painter, 1.0 / m_displayScale);
 }
 
 void PinAnnotator::mousePressEvent(QMouseEvent* event)

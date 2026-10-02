@@ -1189,6 +1189,53 @@ void CaptureWidget::runSelfTest()
                                                                  : "FAIL");
             }
 
+            // 27: 标注墨迹与鼠标位置对齐 —— grab 渲染后定位笔画像素。
+            // 非循环验证 paint 侧坐标（旧 bug：painter.scale(displayScale)
+            // 把基础坐标二次放大，墨迹 = 光标位置 ×1.25，离左上角越远越偏）
+            {
+                annotator->setTool(PinAnnotator::Pencil);
+                annotator->setColor(QColor(255, 0, 255));
+                const QPoint a(60, 60);
+                const QPoint b(200, 150);
+                annoPress(a);
+                for (int t = 1; t <= 10; ++t) {
+                    annoMove(a + (b - a) * t / 10);
+                }
+                annoRelease(b);
+                QApplication::processEvents(QEventLoop::AllEvents, 50);
+                const QImage vis = annotator->grab().toImage();
+                // grab() 输出为设备像素（× 屏幕 DPR），换算回逻辑坐标比对
+                const qreal gdpr =
+                  vis.devicePixelRatio() > 0 ? vis.devicePixelRatio() : 1.0;
+                int minX = 1 << 30, minY = 1 << 30, maxX = -1, maxY = -1;
+                for (int y = 0; y < vis.height(); ++y) {
+                    for (int x = 0; x < vis.width(); ++x) {
+                        const QColor c = vis.pixelColor(x, y);
+                        // 纯洋红笔画（严格阈值避免底图内容误判）
+                        if (c.red() > 230 && c.blue() > 230 && c.green() < 80) {
+                            minX = qMin(minX, qRound(x / gdpr));
+                            maxX = qMax(maxX, qRound(x / gdpr));
+                            minY = qMin(minY, qRound(y / gdpr));
+                            maxY = qMax(maxY, qRound(y / gdpr));
+                        }
+                    }
+                }
+                const bool ok =
+                  maxX >= 0 && qAbs(minX - a.x()) <= 8 &&
+                  qAbs(minY - a.y()) <= 8 && qAbs(maxX - b.x()) <= 8 &&
+                  qAbs(maxY - b.y()) <= 8;
+                qWarning() << "SELFTEST 27 pin-ink-under-cursor:"
+                           << (ok ? "PASS" : "FAIL")
+                           << "bbox:"
+                           << (maxX >= 0
+                                 ? QRect(QPoint(minX, minY),
+                                         QPoint(maxX, maxY))
+                                 : QRect())
+                           << "expected≈" << QRect(a, b).normalized();
+                // 撤销这笔测试笔画，保持后续断言状态干净
+                annotator->undo();
+            }
+
             // 19: 输入法 —— commitString 提交中文
             annotator->setTool(PinAnnotator::Text);
             annoPress(QPoint(80, 430));
