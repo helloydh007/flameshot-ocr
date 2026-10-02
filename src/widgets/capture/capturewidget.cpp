@@ -1206,14 +1206,14 @@ void CaptureWidget::runSelfTest()
 
             // 20: Ctrl+滚轮 —— 透明度变化 + 中央提示
             {
-                const qreal opBefore = pin2->windowOpacity();
+                const qreal opBefore = pin2->pinOpacity();
                 QWheelEvent ctrlWheel(
                   QPointF(200, 200), QPointF(200, 200), QPoint(0, 0),
                   QPoint(0, -120), Qt::NoButton, Qt::ControlModifier,
                   Qt::NoScrollPhase, false);
                 QApplication::sendEvent(pin2, &ctrlWheel);
                 QApplication::processEvents(QEventLoop::AllEvents, 50);
-                const qreal opAfter = pin2->windowOpacity();
+                const qreal opAfter = pin2->pinOpacity();
                 auto* toast = pin2->findChild<QLabel*>();
                 bool toastOk = false;
                 const auto labels = pin2->findChildren<QLabel*>();

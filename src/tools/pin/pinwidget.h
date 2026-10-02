@@ -15,6 +15,7 @@ class QPinchGesture;
 class QGraphicsDropShadowEffect;
 class OcrPanel;
 class QResizeEvent;
+class QGraphicsOpacityEffect;
 class QToolButton;
 
 class PinWidget : public QWidget
@@ -27,6 +28,9 @@ public:
 
     // 复制到剪贴板（含标注合成）
     void copyToClipboard();
+    // Wayland 下 setWindowOpacity 无效，透明度通过渲染层实现
+    void applyOpacity();
+    qreal pinOpacity() const { return m_opacity; }
 
 protected:
     void mouseDoubleClickEvent(QMouseEvent*) override;
@@ -68,6 +72,7 @@ private:
     QWidget* m_toolBarRow = nullptr;
     QToolButton* m_colorButton = nullptr;
     QLabel* m_opacityToast = nullptr;
+    QGraphicsOpacityEffect* m_opacityEffect = nullptr;
     QVector<QPair<PinAnnotator::Tool, QToolButton*>> m_toolButtons;
     QColor m_baseColor, m_hoverColor;
 

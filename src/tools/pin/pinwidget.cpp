@@ -64,7 +64,6 @@ PinWidget::PinWidget(const QPixmap& pixmap,
     m_shadowEffect->setBlurRadius(BLUR_RADIUS);
     m_shadowEffect->setOffset(0, 0);
     setGraphicsEffect(m_shadowEffect);
-    setWindowOpacity(m_opacity);
 
     // flameshot-ocr: pixmap 贴 label 左上且 label 不被拉伸——
     // 保证标注层（= label 几何）与图片显示区原点重合，
@@ -347,6 +346,18 @@ void PinWidget::closePin()
     update();
     close();
 }
+// flameshot-ocr: Wayland 下 setWindowOpacity 是空操作（无对应协议），
+// 透明度改为渲染层实现：给图片 QLabel 加 QGraphicsOpacityEffect。
+// 仅影响显示，复制/保存仍导出原图
+void PinWidget::applyOpacity()
+{
+    if (!m_opacityEffect) {
+        m_opacityEffect = new QGraphicsOpacityEffect(m_label);
+        m_label->setGraphicsEffect(m_opacityEffect);
+    }
+    m_opacityEffect->setOpacity(m_opacity);
+}
+
 void PinWidget::showOpacityToast()
 {
     if (!m_opacityToast) {
@@ -378,7 +389,7 @@ bool PinWidget::scrollEvent(QWheelEvent* event)
         if (angle != 0) {
             m_opacity = qBound(0.1, m_opacity + (angle > 0 ? 0.05 : -0.05),
                                1.0);
-            setWindowOpacity(m_opacity);
+            applyOpacity();
             showOpacityToast();
         }
         event->accept();
@@ -468,7 +479,7 @@ void PinWidget::keyPressEvent(QKeyEvent* event)
         m_opacity = 0.1;
     }
 
-    setWindowOpacity(m_opacity);
+    applyOpacity();
 }
 bool PinWidget::gestureEvent(QGestureEvent* event)
 {
@@ -506,17 +517,17 @@ void PinWidget::increaseOpacity()
     if (m_opacity > 1.0) {
         m_opacity = 1.0;
     }
-    setWindowOpacity(m_opacity);
+    applyOpacity();
 }
 
 void PinWidget::decreaseOpacity()
 {
     m_opacity -= 0.1;
-    if (m_opacity < 0.0) {
-        m_opacity = 0.0;
+    if (m_opacity < 0.1) {
+        m_opacity = 0.1;
     }
 
-    setWindowOpacity(m_opacity);
+    applyOpacity();
 }
 
 bool PinWidget::event(QEvent* event)
