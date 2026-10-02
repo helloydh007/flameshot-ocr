@@ -23,7 +23,9 @@
 #include <QPainter>
 #include <QScreen>
 #include <QShortcut>
+#include <QDir>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -528,7 +530,8 @@ bool PinWidget::event(QEvent* event)
 }
 
 // flameshot-ocr: KWin Wayland 会忽略 Qt 的 WindowStaysOnTopHint，
-// 通过 kwinrulesrc 窗口规则强制 flameshot-pin 窗口置顶（幂等）
+// 通过常驻 KWin 脚本（windowAdded 钩子）强制 flameshot-pin 窗口置顶。
+// 脚本安装到 ~/.local/share/flameshot-ocr/，仅首次加载，此后新钉图自动置顶。
 void PinWidget::ensureKeepAboveRule()
 {
     static bool done = false;
@@ -536,56 +539,59 @@ void PinWidget::ensureKeepAboveRule()
         return;
     }
     done = true;
-    const QString desc = QStringLiteral("Flameshot pin keep above");
-    auto read = [](const QString& key, const QString& def = QString()) {
-        QProcess p;
-        p.start(QStringLiteral("kreadconfig6"),
-                { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
-                  QStringLiteral("--group"), QStringLiteral("General"),
-                  QStringLiteral("--key"), key });
-        p.waitForFinished(2000);
-        const QString out =
-          QString::fromLocal8Bit(p.readAllStandardOutput()).trimmed();
-        return out.isEmpty() ? def : out;
-    };
-    bool exists = false;
-    int count = read(QStringLiteral("count")).toInt();
-    for (int i = 1; i <= count && !exists; ++i) {
-        QProcess p;
-        p.start(QStringLiteral("kreadconfig6"),
-                { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
-                  QStringLiteral("--group"), QString::number(i),
-                  QStringLiteral("--key"), QStringLiteral("description") });
-        p.waitForFinished(2000);
-        exists = QString::fromLocal8Bit(p.readAllStandardOutput())
-                   .trimmed() == desc;
+    const QString scriptDir =
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+      QStringLiteral("/flameshot-ocr");
+    QDir().mkpath(scriptDir);
+    const QString scriptPath = scriptDir +
+      QStringLiteral("/pin-keepabove.js");
+    QFile scriptFile(scriptPath);
+    if (!scriptFile.exists()) {
+        if (scriptFile.open(QIODevice::WriteOnly)) {
+            scriptFile.write(
+              "// flameshot-ocr: keep flameshot-pin windows above\n"
+              "function apply(w) {\n"
+              "    if (w.caption.indexOf(\"flameshot-pin\") !== -1 && "
+              "!w.keepAbove) {\n"
+              "        w.keepAbove = true;\n"
+              "    }\n"
+              "}\n"
+              "workspace.windowList().forEach(apply);\n"
+              "workspace.windowAdded.connect(apply);\n");
+        }
     }
-    if (exists) {
+    if (!scriptFile.exists()) {
         return;
     }
-    const int group = count + 1;
-    auto write = [&](const QString& key, const QString& value) {
-        QProcess::startDetached(
-          QStringLiteral("kwriteconfig6"),
-          { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
-            QStringLiteral("--group"), QString::number(group),
-            QStringLiteral("--key"), key, value });
-    };
-    write(QStringLiteral("description"), desc);
-    write(QStringLiteral("title"), QStringLiteral("flameshot-pin"));
-    write(QStringLiteral("titlematch"), QStringLiteral("2"));
-    write(QStringLiteral("keepon_top"), QStringLiteral("true"));
-    write(QStringLiteral("keepon_toprule"), QStringLiteral("2"));
+    // 已加载则无需重复
+    QProcess isLoaded;
+    isLoaded.start(
+      QStringLiteral("qdbus6"),
+      { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+        QStringLiteral("org.kde.kwin.Scripting.isScriptLoaded"), scriptPath });
+    isLoaded.waitForFinished(3000);
+    if (QString::fromLocal8Bit(isLoaded.readAllStandardOutput())
+          .trimmed() == QStringLiteral("true")) {
+        return;
+    }
+    QProcess load;
+    load.start(QStringLiteral("qdbus6"),
+               { QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+                 QStringLiteral("org.kde.kwin.Scripting.loadScript"),
+                 scriptPath });
+    load.waitForFinished(3000);
+    bool ok = false;
+    const QString reply =
+      QString::fromLocal8Bit(load.readAllStandardOutput()).trimmed();
+    int scriptId = reply.toInt(&ok);
+    if (!ok) {
+        return;
+    }
     QProcess::startDetached(
-      QStringLiteral("kwriteconfig6"),
-      { QStringLiteral("--file"), QStringLiteral("kwinrulesrc"),
-        QStringLiteral("--group"), QStringLiteral("General"),
-        QStringLiteral("--key"), QStringLiteral("count"),
-        QString::number(group) });
-    QProcess::startDetached(QStringLiteral("qdbus6"),
-                            { QStringLiteral("org.kde.KWin"),
-                              QStringLiteral("/KWin"),
-                              QStringLiteral("reconfigure") });
+      QStringLiteral("qdbus6"),
+      { QStringLiteral("org.kde.KWin"),
+        QStringLiteral("/Scripting/Script%1").arg(scriptId),
+        QStringLiteral("org.kde.kwin.Script.run") });
 }
 
 void PinWidget::positionAnnotator()
