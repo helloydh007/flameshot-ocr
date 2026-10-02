@@ -60,6 +60,8 @@ private:
     QPixmap compositedPixmap() const;
     void positionAnnotator();
     void buildToolBar();
+    // flameshot-ocr: 主题切换后重设工具条样式与图标
+    void applyTheme();
     void showCenterToast(const QString& text);
     void ensureKeepAboveRule();
 

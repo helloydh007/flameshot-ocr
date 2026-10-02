@@ -131,12 +131,18 @@ OcrPanel::OcrPanel(QWidget* parent)
                 }
             });
 
+    // flameshot-ocr: 配色抽成 refreshTheme()——构造时初始化，
+    // 主题切换（配置文件变化）时重刷
+    refreshTheme();
+    connect(ConfigHandler::getInstance(), &ConfigHandler::fileChanged, this,
+            &OcrPanel::refreshTheme);
+}
+
+// flameshot-ocr: 按当前主题令牌重设面板样式表
+void OcrPanel::refreshTheme()
+{
     const QString accent = ConfigHandler().uiColor().name();
-    // flameshot-ocr: 面板配色走 UiTheme 令牌（亮/暗/跟随系统），
-    // 不再硬编码暗色
     const bool dark = UiTheme::isDarkTheme();
-    const QString bg = UiTheme::panelBg().name();
-    const QString border = UiTheme::panelBorder().name();
     const QString fg = UiTheme::panelFg().name();
     const QString fgDim = UiTheme::panelFgDim().name();
     const QString hover = UiTheme::hoverBg().name();
@@ -166,8 +172,7 @@ OcrPanel::OcrPanel(QWidget* parent)
              hover,
              inputSel,
              UiTheme::copyTextFg().name()));
-    Q_UNUSED(bg)
-    Q_UNUSED(border)
+    update();
 }
 
 QString OcrPanel::tr2(const char* zh, const char* en)

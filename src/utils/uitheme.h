@@ -44,6 +44,15 @@ QColor copyTextFg();   // 强调按钮上的文字
 // 工具条图标基准尺寸（toolbarIconSize 配置，16-48，默认 24）
 int iconSize();
 
+// 工具条图标集：暗色主题用白图标（深底），亮色用黑图标（浅底）。
+// 返回 qrc 前缀，如 ":/img/material/white/"；拼图标名即得路径。
+QString iconDir();
+
+// 把 uiTheme 配置应用到应用级调色板（设置窗口、关于窗口等原生控件）。
+// system 模式下恢复平台默认；light/dark 用 Fusion + 定制 QPalette。
+// 在 app 级调用一次，并可在配置变化后重复调用（幂等）。
+void applyApplicationPalette();
+
 // OCR 结果面板相对选区的位置（ocrPanelPosition 配置）
 PanelPos ocrPanelPosition();
 PanelPos panelPosFromString(const QString& s);

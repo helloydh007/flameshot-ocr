@@ -29,6 +29,8 @@ public:
     static QString tr2(const char* zh, const char* en);
 
 protected:
+    // flameshot-ocr: 按当前主题令牌重设样式表
+    void refreshTheme();
     void paintEvent(QPaintEvent* event) override;
     // 面板及其子控件未消费的输入事件在此 accept，防止冒泡到 CaptureWidget
     // （否则会触发隐藏面板、取色器、笔刷大小转轮等画布行为）

@@ -4,7 +4,9 @@
 #include "uitheme.h"
 #include "src/utils/confighandler.h"
 
+#include <QApplication>
 #include <QGuiApplication>
+#include <QStyle>
 #include <QStyleHints>
 
 namespace
@@ -98,6 +100,61 @@ QColor copyTextFg()
 int iconSize()
 {
     return ConfigHandler().toolbarIconSize();
+}
+
+QString iconDir()
+{
+    return isDarkTheme() ? QStringLiteral(":/img/material/white/")
+                         : QStringLiteral(":/img/material/black/");
+}
+
+void applyApplicationPalette()
+{
+    // CLI 模式（flameshot full/config 直通）是 QCoreApplication，
+    // setStyle/setPalette 是 Widgets API——在那种进程里直接跳过
+    if (!qobject_cast<QApplication*>(qApp)) {
+        return;
+    }
+    // light/dark：Fusion + 定制调色板（设置窗口等原生控件随之变色）。
+    // system：恢复 Fusion 默认调色板，让平台主题接管。
+    if (themeMode() != Mode::System) {
+        qApp->setStyle(QStringLiteral("Fusion"));
+    }
+    QPalette pal;
+    if (themeMode() == Mode::Dark) {
+        pal.setColor(QPalette::Window, QColor(37, 37, 41));
+        pal.setColor(QPalette::WindowText, QColor(232, 232, 236));
+        pal.setColor(QPalette::Base, QColor(28, 28, 32));
+        pal.setColor(QPalette::AlternateBase, QColor(37, 37, 41));
+        pal.setColor(QPalette::Text, QColor(232, 232, 236));
+        pal.setColor(QPalette::Button, QColor(45, 45, 50));
+        pal.setColor(QPalette::ButtonText, QColor(232, 232, 236));
+        pal.setColor(QPalette::Highlight, QColor(0, 122, 255));
+        pal.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+        pal.setColor(QPalette::ToolTipBase, QColor(45, 45, 50));
+        pal.setColor(QPalette::ToolTipText, QColor(232, 232, 236));
+        pal.setColor(QPalette::PlaceholderText, QColor(140, 140, 148));
+        pal.setColor(QPalette::Disabled, QPalette::Text, QColor(120, 120, 126));
+        pal.setColor(QPalette::Disabled, QPalette::ButtonText,
+                     QColor(120, 120, 126));
+    } else {
+        pal.setColor(QPalette::Window, QColor(245, 245, 247));
+        pal.setColor(QPalette::WindowText, QColor(30, 30, 34));
+        pal.setColor(QPalette::Base, QColor(255, 255, 255));
+        pal.setColor(QPalette::AlternateBase, QColor(245, 245, 247));
+        pal.setColor(QPalette::Text, QColor(30, 30, 34));
+        pal.setColor(QPalette::Button, QColor(255, 255, 255));
+        pal.setColor(QPalette::ButtonText, QColor(30, 30, 34));
+        pal.setColor(QPalette::Highlight, QColor(0, 122, 255));
+        pal.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+        pal.setColor(QPalette::ToolTipBase, QColor(255, 255, 255));
+        pal.setColor(QPalette::ToolTipText, QColor(30, 30, 34));
+        pal.setColor(QPalette::PlaceholderText, QColor(140, 140, 148));
+        pal.setColor(QPalette::Disabled, QPalette::Text, QColor(150, 150, 156));
+        pal.setColor(QPalette::Disabled, QPalette::ButtonText,
+                     QColor(150, 150, 156));
+    }
+    qApp->setPalette(pal);
 }
 
 PanelPos panelPosFromString(const QString& s)

@@ -20,7 +20,8 @@ namespace
 {
 QString iconFile(const QString& name)
 {
-    return PathInfo::whiteIconPath() + name;
+    // flameshot-ocr: 图标集随主题（暗→white，亮→black）
+    return UiTheme::iconDir() + name;
 }
 
 QToolButton* flatButton(QWidget* parent,
@@ -28,6 +29,8 @@ QToolButton* flatButton(QWidget* parent,
                         const QString& tip)
 {
     auto* button = new QToolButton(parent);
+    // 记录图标名：主题切换时按 UiTheme::iconDir() 重建
+    button->setProperty("iconName", icon);
     button->setIcon(QIcon(iconFile(icon)));
     button->setToolTip(tip);
     button->setAutoRaise(true);
@@ -45,6 +48,10 @@ PreToolbar::PreToolbar(QWidget* parent)
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(8, 4, 8, 4);
     layout->setSpacing(2);
+
+    // flameshot-ocr: 主题/配置变化时即时刷新（配置文件监视器触发）
+    connect(ConfigHandler::getInstance(), &ConfigHandler::fileChanged, this,
+            &PreToolbar::applyTheme);
 
     m_selectBtn = flatButton(this, QStringLiteral("cursor-move"),
                              OcrPanel::tr2("框选截图", "Region select"));
@@ -260,6 +267,22 @@ void PreToolbar::setDrawColorPreview(const QColor& color)
     swatch.fill(color);
     m_colorBtn->setIcon(QIcon(swatch));
     m_colorBtn->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
+}
+
+// flameshot-ocr: 主题切换（配置文件变化触发）——按新令牌重建图标与配色
+void PreToolbar::applyTheme()
+{
+    for (auto* button : findChildren<QToolButton*>()) {
+        const QString name = button->property("iconName").toString();
+        if (!name.isEmpty()) {
+            button->setIcon(QIcon(iconFile(name)));
+        }
+    }
+    for (auto* sep : findChildren<QFrame*>()) {
+        sep->setStyleSheet(
+          QStringLiteral("color: %1;").arg(UiTheme::panelBorder().name()));
+    }
+    update();
 }
 
 void PreToolbar::showEvent(QShowEvent* event)

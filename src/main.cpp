@@ -19,6 +19,7 @@
 #include "src/utils/confighandler.h"
 #include "src/utils/filenamehandler.h"
 #include "src/utils/pathinfo.h"
+#include "src/utils/uitheme.h"
 #include "src/utils/valuehandler.h"
 #include <QApplication>
 #include <QDir>
@@ -183,6 +184,11 @@ void configureApp(bool gui, QTranslator& translator, QTranslator& qtTranslator)
     auto app = QCoreApplication::instance();
     app->setAttribute(Qt::AA_DontCreateNativeWidgetSiblings, true);
     configureTranslation(translator, qtTranslator);
+
+    // flameshot-ocr: 所有进程（daemon / gui / config）统一按 uiTheme
+    // 配置应用应用级调色板——设置窗口、关于窗口随之亮/暗。
+    // daemon 另有 fileChanged 监听做运行中即时切换。
+    UiTheme::applyApplicationPalette();
 }
 
 // TODO find a way so we don't have to do this

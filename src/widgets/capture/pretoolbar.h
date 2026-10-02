@@ -20,6 +20,8 @@ public:
     void setToolChecked(CaptureTool::Type type);
     void setEraserChecked(bool checked);
     void setDrawColorPreview(const QColor& color);
+    // flameshot-ocr: 主题切换后重建图标与配色
+    void applyTheme();
 
 signals:
     void selectModeRequested();

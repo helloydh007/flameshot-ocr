@@ -6,6 +6,7 @@
 #include "pinwidget.h"
 #include "screenshotsaver.h"
 #include "src/utils/globalvalues.h"
+#include "src/utils/uitheme.h"
 #include "src/widgets/capture/capturewidget.h"
 #include "src/widgets/trayicon.h"
 #include <QApplication>
@@ -118,6 +119,13 @@ void FlameshotDaemon::start()
         // Tray icon needs FlameshotDaemon::instance() to be non-null
         m_instance->initTrayIcon();
         qApp->setQuitOnLastWindowClosed(false);
+        // flameshot-ocr: 应用 uiTheme 配置到应用级调色板（设置窗口、
+        // 关于窗口等原生控件），并在配置文件变化时即时重刷
+        UiTheme::applyApplicationPalette();
+        QObject::connect(ConfigHandler::getInstance(),
+                         &ConfigHandler::fileChanged,
+                         m_instance,
+                         []() { UiTheme::applyApplicationPalette(); });
         // flameshot-ocr: daemon 启动即确保启动快捷键脚本就位（自愈式：
         // 每次登录 daemon 自启后按 launchShortcut 配置加载 kwin 脚本，
         // 把按键注册为 callDBus 直调 daemon —— 后者不产生启动反馈）

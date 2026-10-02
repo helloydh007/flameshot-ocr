@@ -182,6 +182,10 @@ PinWidget::PinWidget(const QPixmap& pixmap,
     m_annotator->setDisplayScale(m_pixmap.devicePixelRatio());
     m_annotator->setFill(ConfigHandler().shapeFill());
     buildToolBar();
+
+    // flameshot-ocr: 配置文件变化（含主题切换）时即时刷新工具条
+    connect(ConfigHandler::getInstance(), &ConfigHandler::fileChanged, this,
+            &PinWidget::applyTheme);
     ensureKeepAboveRule();
 
     new QShortcut(QKeySequence::Undo, this, [this]() {
@@ -208,7 +212,8 @@ void PinWidget::buildToolBar()
     auto addToolButton = [&](const QString& icon, const QString& tip,
                              PinAnnotator::Tool tool) {
         auto* button = new QToolButton(m_toolBarRow);
-        button->setIcon(QIcon(PathInfo::whiteIconPath() + icon));
+        button->setProperty("iconName", icon);
+        button->setIcon(QIcon(UiTheme::iconDir() + icon));
         button->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
         button->setToolTip(tip);
         button->setCheckable(true);
@@ -253,7 +258,8 @@ void PinWidget::buildToolBar()
 
     // 形状填充开关（与截图工具栏共享 shapeFill 配置）
     auto* fillButton = new QToolButton(m_toolBarRow);
-    fillButton->setIcon(QIcon(PathInfo::whiteIconPath() +
+    fillButton->setProperty("iconName", QStringLiteral("rectangle"));
+    fillButton->setIcon(QIcon(UiTheme::iconDir() +
                               QStringLiteral("rectangle")));
     fillButton->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
     fillButton->setToolTip(
@@ -306,7 +312,8 @@ void PinWidget::buildToolBar()
 
     // 粗细下拉
     auto* widthButton = new QToolButton(m_toolBarRow);
-    widthButton->setIcon(QIcon(PathInfo::whiteIconPath() +
+    widthButton->setProperty("iconName", QStringLiteral("minus.svg"));
+    widthButton->setIcon(QIcon(UiTheme::iconDir() +
                                QStringLiteral("minus.svg")));
     widthButton->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
     widthButton->setToolTip(OcrPanel::tr2("粗细", "Width"));
@@ -331,7 +338,8 @@ void PinWidget::buildToolBar()
     auto addActionButton = [&](const QString& icon, const QString& tip,
                                std::function<void()> fn) {
         auto* button = new QToolButton(m_toolBarRow);
-        button->setIcon(QIcon(PathInfo::whiteIconPath() + icon));
+        button->setProperty("iconName", icon);
+        button->setIcon(QIcon(UiTheme::iconDir() + icon));
         button->setIconSize(QSize(UiTheme::iconSize() * 3 / 4, UiTheme::iconSize() * 3 / 4));
         button->setToolTip(tip);
         button->setAutoRaise(true);
@@ -620,6 +628,41 @@ void keepAboveFail(QProcess* proc)
     proc->deleteLater();
 }
 } // namespace
+
+// flameshot-ocr: 主题切换（配置文件变化触发）——重设工具条样式与图标
+void PinWidget::applyTheme()
+{
+    if (!m_toolBarRow) {
+        return;
+    }
+    QColor tbBg = UiTheme::panelBg();
+    tbBg.setAlpha(238);
+    const QString accent = ConfigHandler().uiColor().name();
+    m_toolBarRow->setStyleSheet(
+      QStringLiteral("#pinToolBar { background-color: %2; "
+                     "border: 1px solid %3; border-top: none; "
+                     "border-radius: 0 0 8px 8px; }"
+                     "#pinToolBar QToolButton { color: %4; "
+                     "background: transparent; border: none; "
+                     "border-radius: 14px; padding: 5px; }"
+                     "#pinToolBar QToolButton:hover { background: %5; "
+                     "color: %6; }"
+                     "#pinToolBar QToolButton:checked { background: %1; "
+                     "color: %6; }")
+        .arg(accent,
+             tbBg.name(QColor::HexArgb),
+             UiTheme::panelBorder().name(),
+             UiTheme::panelFg().name(),
+             UiTheme::hoverBg().name(),
+             UiTheme::copyTextFg().name()));
+    for (auto* button : m_toolBarRow->findChildren<QToolButton*>()) {
+        const QString name = button->property("iconName").toString();
+        if (!name.isEmpty()) {
+            button->setIcon(QIcon(UiTheme::iconDir() + name));
+        }
+    }
+    m_toolBarRow->update();
+}
 
 void PinWidget::ensureKeepAboveRule()
 {
