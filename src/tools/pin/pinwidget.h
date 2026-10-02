@@ -72,6 +72,8 @@ private:
     PinImageView* m_label;
     QGraphicsDropShadowEffect* m_shadowEffect;
     OcrPanel* m_ocrPanel = nullptr;
+    // 识别任务世代计数：新任务发起后，旧任务的迟到结果直接丢弃
+    quint64 m_ocrGeneration = 0;
     PinAnnotator* m_annotator = nullptr;
     QWidget* m_toolBarRow = nullptr;
     QToolButton* m_colorButton = nullptr;

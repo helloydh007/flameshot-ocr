@@ -86,6 +86,25 @@ cpack --config build/CPackConfig.cmake -G DEB   # 可选：生成 deb
 辅助调试：环境变量 `FLAMESHOT_OCR_AUTOTEST=1` 时，截图界面打开约 1.2 秒后自动对
 整屏跑一次 OCR（用于无头验证整条链路）。
 
+## 代码审查修复记录（2026-10-02，DeepSeek/千问双报告）
+
+两份外部审查报告指出的问题及修复方式（全部已落地并以 40 项运行时断言 +
+ASan/LSan + 临时文件残留检查验证）：
+
+| 审查问题 | 修复 |
+|---|---|
+| **[高] `OcrHelper::run` 泄漏**：QProcess/QTemporaryFile 以调用方为父对象，`finished`/`errorOccurred` 回调后从不销毁——钉图每点一次 OCR 就累积一对对象和临时文件 | 每条结束路径（成功/失败/FailedToStart/参数错误）均 `deleteLater()`，任务结束立即回收；验证：OCR 后 `/tmp/flameshot-ocr-*` 零残留 |
+| **[高] 主线程阻塞**：`CaptureWidget::runOcr` 里 `kill()` + `waitForFinished(3000)` 同步等待，最长冻结 UI 3 秒 | 截图界面整段内联管道删除，改走 `OcrHelper` 公共管线（纯异步，无任何 wait），重复触发用世代计数器 `m_ocrGeneration` 丢弃过期结果（钉图同样加固） |
+| **[审查未发现的衍生崩溃]**：OCR 进行中关闭钉图 → `~QProcess` 析构内 kill+waitForFinished 同步发出 `finished` → 回调触摸已销毁的面板 → 段错误 | `OcrHelper` 两个连接改 `Qt::QueuedConnection`：析构期发出的信号被 Qt 事件清除机制吞掉，回调只经事件循环投递到存活对象；gdb 复现→修复→ASan 确认无 use-after-free |
+| **[中] 临时文件写入**：保存后未 flush 即启动外部进程，理论上有数据滞留缓冲区的风险 | `save()` 后显式 `flush()`；文件名加入进程 PID 便于多实例排查 |
+| **[中] 正则重复编译**：每次识别重新编译 `\n{3,}` | 提取为 `normalizeOcrText()` 内 `static const QRegularExpression`（两处调用点合一） |
+| **[中] 整屏 `toImage()` 深拷贝**：先整屏转 QImage 再裁剪，4K 屏浪费数十 MB | 先 `QPixmap::copy(deviceRect)` 裁小图再 `toImage()`；分数缩放下坐标用 `qRound` 显式取整 |
+| **[中] 未定义行为死代码**：`src/utils/waylandutils.cpp` 非 void 函数无 return | 文件未在任何 CMakeLists 注册（本就未编译），直接删除 |
+| **[低] 错误信息不统一 / 语言包缺失提示**：FailedToStart 报错硬编码 "tesseract"，与实际引擎无关；缺语言包时 stderr 天书 | 统一 `formatOcrError()`（`OCR <程序>: <错误>` 格式）；stderr 命中语言包特征时追加 `apt install tesseract-ocr-chi-sim` 安装提示 |
+
+OcrPanel 内部资源（审查存疑项）：面板无图片缓存，`showLoading`/`showText` 均
+`clear()` 旧文本，无累积——审查报告的疑虑实测排除。
+
 ## 许可
 
 与上游一致：GPL-3.0-or-later。

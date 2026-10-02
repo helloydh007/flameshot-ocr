@@ -23,7 +23,6 @@
 #include <QMessageBox>
 #include <QHash>
 #include <QPointer>
-#include <QProcess>
 #include <QTimer>
 #include <QUndoStack>
 #include <QWidget>
@@ -44,7 +43,6 @@ class UpdateNotificationWidget;
 class UtilityPanel;
 class SidePanelWidget;
 class OcrPanel;
-class QTemporaryFile;
 class PreToolbar;
 class ColorGrabWidget;
 
@@ -164,7 +162,6 @@ private:
     void makeChild(QWidget* w);
     void restoreCircleCountState();
     void runOcr();
-    void onOcrFinished(int exitCode, QProcess::ExitStatus status);
 
     QList<QShortcut*> newShortcut(const QKeySequence& key,
                                   QWidget* parent,
@@ -193,10 +190,10 @@ private:
     // Context information
     CaptureContext m_context;
 
-    // flameshot-ocr: OCR process and result panel
+    // flameshot-ocr: OCR result panel。识别任务走 OcrHelper 公共管线，
+    // m_ocrGeneration 用于丢弃过期的回调（新任务发起后旧任务的结果不再上屏）
     OcrPanel* m_ocrPanel = nullptr;
-    QProcess* m_ocrProcess = nullptr;
-    QTemporaryFile* m_ocrTempFile = nullptr;
+    quint64 m_ocrGeneration = 0;
 
     // flameshot-ocr: Win11 风格预选区悬浮工具条 + 取色器
     PreToolbar* m_preToolbar = nullptr;

@@ -18,6 +18,7 @@
 #include "src/config/cacheutils.h"
 #include "src/core/flameshot.h"
 #include "src/core/qguiappcurrentscreen.h"
+#include "src/utils/ocrhelper.h"
 #include "src/utils/screengrabber.h"
 #include "src/utils/screenshotsaver.h"
 #include "src/utils/systemnotification.h"
@@ -55,10 +56,6 @@
 #include <functional>
 #include <memory>
 #include <QImage>
-#include <QProcess>
-#include <QRegularExpression>
-#include <QStandardPaths>
-#include <QTemporaryFile>
 #include <draggablewidgetmaker.h>
 
 #if !defined(DISABLE_UPDATE_CHECKER)
@@ -1263,6 +1260,12 @@ void CaptureWidget::runSelfTest()
                     panel->hide();
                 }
             }
+
+            // 清理测试钉图：无父控件的 widget 不随进程退出析构，
+            // 显式销毁以释放其 OCR 子对象（QProcess/QTemporaryFile）
+            pin->deleteLater();
+            pin2->deleteLater();
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
             fflush(stderr);
         }
 
@@ -2912,6 +2915,9 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
 
 // flameshot-ocr: run OCR on the current selection (or the whole capture when
 // nothing is selected) and display the result in a panel beside the selection.
+// 审查修复：改走 OcrHelper 公共管线 —— 不再在主线程 waitForFinished
+// 同步等待（旧实现最长冻结 UI 3 秒）；被新任务取代的旧结果通过
+// m_ocrGeneration 世代计数器作废；QProcess/临时文件在任务结束后立即回收。
 void CaptureWidget::runOcr()
 {
     QRect sel = m_context.selection.isNull() ? rect() : m_context.selection;
@@ -2926,78 +2932,31 @@ void CaptureWidget::runOcr()
     m_ocrPanel->showLoading(sel);
 
     const qreal dpr = m_context.origScreenshot.devicePixelRatio();
-    QRect deviceRect(sel.topLeft() * dpr, sel.bottomRight() * dpr);
+    // 审查修复：分数缩放下用 qRound 映射设备坐标避免亚像素偏差；并且先
+    // 裁剪 QPixmap 再 toImage，避免整屏像素的深拷贝（4K 屏可省数十 MB）。
+    QRect deviceRect(
+      QPoint(qRound(sel.left() * dpr), qRound(sel.top() * dpr)),
+      QPoint(qRound(sel.right() * dpr), qRound(sel.bottom() * dpr)));
     deviceRect = deviceRect.intersected(m_context.origScreenshot.rect());
     if (deviceRect.isEmpty()) {
         m_ocrPanel->showFailure();
         return;
     }
-    const QImage crop = m_context.origScreenshot.toImage().copy(deviceRect);
+    const QImage crop = m_context.origScreenshot.copy(deviceRect).toImage();
 
-    if (!m_ocrProcess) {
-        m_ocrProcess = new QProcess(this);
-        connect(m_ocrProcess,
-                &QProcess::finished,
-                this,
-                &CaptureWidget::onOcrFinished);
-        connect(m_ocrProcess,
-                &QProcess::errorOccurred,
-                this,
-                [this](QProcess::ProcessError error) {
-                    if (error == QProcess::FailedToStart && m_ocrPanel) {
-                        m_ocrPanel->showFailure(
-                          QStringLiteral("tesseract: FailedToStart"));
-                    }
-                });
-    }
-    if (m_ocrProcess->state() != QProcess::NotRunning) {
-        m_ocrProcess->kill();
-        m_ocrProcess->waitForFinished(3000);
-    }
-
-    delete m_ocrTempFile;
-    m_ocrTempFile = new QTemporaryFile(this);
-    m_ocrTempFile->setFileTemplate(
-      QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-      QStringLiteral("/flameshot-ocr-XXXXXX.png"));
-    if (!m_ocrTempFile->open() || !crop.save(m_ocrTempFile, "PNG")) {
-        m_ocrPanel->showFailure(QStringLiteral("Cannot write temporary image"));
-        return;
-    }
-
-    QString command = ConfigHandler().ocrCommand();
-    command.replace(QStringLiteral("%i"), m_ocrTempFile->fileName());
-    QStringList args = QProcess::splitCommand(command);
-    if (args.isEmpty()) {
-        m_ocrPanel->showFailure(QStringLiteral("Empty ocrCommand"));
-        return;
-    }
-    const QString program = args.takeFirst();
-    m_ocrProcess->start(program, args);
-}
-
-void CaptureWidget::onOcrFinished(int exitCode, QProcess::ExitStatus status)
-{
-    if (!m_ocrPanel) {
-        return;
-    }
-    if (status != QProcess::NormalExit || exitCode != 0) {
-        const QString err =
-          QString::fromLocal8Bit(m_ocrProcess->readAllStandardError())
-            .simplified();
-        m_ocrPanel->showFailure(err.left(300));
-        return;
-    }
-    QString text = QString::fromUtf8(m_ocrProcess->readAllStandardOutput());
-    text.remove(QChar('\f'));
-    text.replace(QRegularExpression(QStringLiteral("\\n{3,}")),
-                 QStringLiteral("\n\n"));
-    text = text.trimmed();
-    if (text.isEmpty()) {
-        m_ocrPanel->showFailure();
-        return;
-    }
-    m_ocrPanel->showText(text);
+    const quint64 generation = ++m_ocrGeneration;
+    OcrHelper::run(crop, this, [this, generation](bool ok, const QString& text) {
+        if (generation != m_ocrGeneration || !m_ocrPanel) {
+            return; // 已被更新的识别任务取代，或面板已销毁
+        }
+        if (!ok) {
+            m_ocrPanel->showFailure(text);
+        } else if (text.isEmpty()) {
+            m_ocrPanel->showFailure();
+        } else {
+            m_ocrPanel->showText(text);
+        }
+    });
 }
 
 /**

@@ -816,19 +816,20 @@ void PinWidget::runOcr()
         m_ocrPanel = new OcrPanel(this);
     }
     m_ocrPanel->showLoading(rect());
-    OcrHelper::run(
-      m_pixmap.toImage(), this, [this](bool ok, const QString& result) {
-          if (!m_ocrPanel) {
-              return;
-          }
-          if (!ok) {
-              m_ocrPanel->showFailure(result);
-          } else if (result.isEmpty()) {
-              m_ocrPanel->showFailure();
-          } else {
-              m_ocrPanel->showText(result);
-          }
-      });
+    const quint64 generation = ++m_ocrGeneration;
+    OcrHelper::run(m_pixmap.toImage(), this, [this, generation](
+                     bool ok, const QString& result) {
+        if (generation != m_ocrGeneration || !m_ocrPanel) {
+            return; // 已被更新的识别任务取代，或面板已销毁
+        }
+        if (!ok) {
+            m_ocrPanel->showFailure(result);
+        } else if (result.isEmpty()) {
+            m_ocrPanel->showFailure();
+        } else {
+            m_ocrPanel->showText(result);
+        }
+    });
 }
 
 void PinWidget::saveToFile()
