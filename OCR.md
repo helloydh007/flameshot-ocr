@@ -140,18 +140,23 @@ kwin 的蓝色齿轮。截图遮罩窗口不抢焦点，token 无人消费，反
 kglobalshortcutrc `[kwin] FlameshotGuiF1=F1` 恢复绑定。
 
 **补充（实测收尾）**：改为 DBus 直调后用户仍见齿轮跳动约 2-3 秒（此时
-F1 已零进程启动）——说明还有别的窗口激活路径触发 kwin 内置
-StartupFeedback 效果。最终补刀：`~/.config/klaunchrc` 写入
+F1 已零进程启动，托盘点击同样出现）——齿轮与「截图窗口打开」绑定：
+窗口 show 时 Qt 的 requestActivate 回退分支会带输入 serial 向 kwin 申领
+新的 activation token，kwin 铸币即触发内置 StartupFeedback 效果（弹跳
+齿轮）。该效果为 internal 编译项，运行时无法卸载，且其 klaunchrc 热加载
+与全局 reconfigure 实测均不刷新（`supportInformation` 始终 type:1），
+仅在 kwin 启动时读取配置。因此写入
 
 ```ini
+# ~/.config/klaunchrc
 [FeedbackStyle]
 BusyCursor=false
 ```
 
-kwin 的该效果是 internal 编译项（`kwinrc [Plugins]` 开关无效），但它通过
-KConfigWatcher 实时监听 klaunchrc，改完立即生效（等价于 系统设置 →
-通知 → 应用启动反馈 设为"无"）。此开关全局关闭启动反馈动画；F1 场景已
-无进程启动，不再依赖该反馈，副作用仅为其它应用启动时也无光标动画。
+后**需要注销重登一次**（无需重启整机）才生效——kwin 启动时读到
+BusyCursor=false → `m_type = NoFeedback`（startupfeedback.cpp:153），
+此后无论谁铸币都不再绘制齿轮。等价于 系统设置 → 通知 → 应用启动反馈
+设为「无」。
 
 ## 许可
 
