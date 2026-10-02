@@ -1346,6 +1346,53 @@ void CaptureWidget::runSelfTest()
                            << "active tesseract:" << procs;
             }
 
+            // 28: 按钮渲染 —— 每个图标按钮真实渲染成位图并检查非全透明
+            // （qrc 漏登记/路径错/SVG 损坏都会得到空白图标；availableSizes
+            // 是引擎惰性记录，不能作为渲染判据）
+            {
+                int checked = 0, empty = 0;
+                auto renderedBlank = [](const QIcon& icon) {
+                    const QPixmap pm = icon.pixmap(QSize(24, 24));
+                    if (pm.isNull()) {
+                        return true;
+                    }
+                    const QImage img = pm.toImage();
+                    for (int y = 0; y < img.height(); ++y) {
+                        for (int x = 0; x < img.width(); ++x) {
+                            if (img.pixelColor(x, y).alpha() > 0) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                };
+                // 主选择工具条 + 预选工具条（CaptureToolButton 均挂在本控件树下）
+                for (auto* b : findChildren<CaptureToolButton*>()) {
+                    ++checked;
+                    if (b->icon().isNull() || renderedBlank(b->icon())) {
+                        ++empty;
+                        qWarning() << "  blank icon button (type"
+                                   << static_cast<int>(b->tool()->type())
+                                   << ")";
+                    }
+                }
+                // 钉图工具条 + 挂在钉图下的 OCR 面板按钮；
+                // 文本按钮（最小化 —/关闭 ✕）跳过图标检查
+                for (auto* b : pin2->findChildren<QToolButton*>()) {
+                    if (!b->text().isEmpty()) {
+                        continue;
+                    }
+                    ++checked;
+                    if (b->icon().isNull() || renderedBlank(b->icon())) {
+                        ++empty;
+                        qWarning() << "  blank pin button:" << b->toolTip();
+                    }
+                }
+                qWarning() << "SELFTEST 28 button-icons:"
+                           << (empty == 0 && checked >= 20 ? "PASS" : "FAIL")
+                           << "checked:" << checked << "empty:" << empty;
+            }
+
             // 26: OCR 预处理 —— 2x 放大 + 锐化：尺寸翻倍、内容非空
             {
                 QImage test(120, 80, QImage::Format_ARGB32);

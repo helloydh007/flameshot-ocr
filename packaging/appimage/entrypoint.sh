@@ -62,6 +62,22 @@ for _ in 1 2; do
         done
 done
 
+echo "==> 捆绑 OCR 引擎（tesseract + 中/英语言包，开箱即用）"
+# 布局：usr/ocr/bin/tesseract + usr/ocr/share/tessdata（AppRun 注入
+# PATH 与 TESSDATA_PREFIX）；动态库并入 usr/lib 统一由 AppRun 暴露
+mkdir -p "$APPDIR/usr/ocr/bin" "$APPDIR/usr/ocr/share/tessdata"
+cp -a /usr/bin/tesseract "$APPDIR/usr/ocr/bin/"
+# 语言包：中文简体 + 英文 + osd（方向检测；pdf.ttf 仅 PDF 输出用，剔除省 1MB）
+cp -a /usr/share/tesseract-ocr/*/tessdata/* "$APPDIR/usr/ocr/share/tessdata/"
+rm -f "$APPDIR/usr/ocr/share/tessdata/pdf.ttf"
+for _ in 1 2; do
+    ldd "$APPDIR/usr/ocr/bin/tesseract" 2>/dev/null \
+        | awk '/=> \//{print $3}' | sort -u | while read -r dep; do
+            base=$(basename "$dep")
+            [ -e "$APPDIR/usr/lib/$base" ] || cp -aL "$dep" "$APPDIR/usr/lib/"
+        done
+done
+
 echo "==> 写 qt.conf（插件路径相对二进制）+ Qt 自带翻译"
 # Qt 自带翻译（qtbase_*.qm，否则运行时告警 "No Qt translation found"）
 if [ -d /usr/share/qt6/translations ]; then

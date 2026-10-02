@@ -130,6 +130,13 @@ void FlameshotDaemon::start()
 // 图标的进程启动）不再被触发。
 void FlameshotDaemon::ensureF1ShortcutScript()
 {
+    // GNOME/其它桌面无 qdbus6（也无 kwin）：立即跳过。旧实现里
+    // QProcess 对不存在的二进制要等 waitForFinished 超时，daemon 启动
+    // 白白卡顿；F1 在这些桌面经系统快捷键设置指向 flameshot gui 即可。
+    if (QStandardPaths::findExecutable(QStringLiteral("qdbus6"))
+          .isEmpty()) {
+        return;
+    }
     const QString scriptDir =
       QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
       QStringLiteral("/flameshot-ocr");

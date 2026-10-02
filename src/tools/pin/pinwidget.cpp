@@ -617,6 +617,12 @@ void PinWidget::ensureKeepAboveRule()
     if (s_keepAboveState != 0) {
         return; // 已加载(2)或已有一次加载在途(1)
     }
+    // GNOME/其它桌面无 qdbus6：直接放弃置顶脚本（钉图仍可用，只是不置顶）
+    if (QStandardPaths::findExecutable(QStringLiteral("qdbus6"))
+          .isEmpty()) {
+        s_keepAboveState = 2;
+        return;
+    }
     const QString scriptDir =
       QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
       QStringLiteral("/flameshot-ocr");

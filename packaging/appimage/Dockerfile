@@ -28,7 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         qt6-tools-dev-tools \
         qt6-l10n-tools \
         qt6-wayland \
+        qt6-svg-plugins \
         libgl1-mesa-dev \
+        # OCR 引擎随包捆绑（开箱即用，无需宿主机安装）
+        tesseract-ocr \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

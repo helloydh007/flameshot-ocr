@@ -84,15 +84,30 @@ kwriteconfig6 --file kglobalshortcutsrc --group kwin --key FlameshotGuiF1 --dele
 | 组件 | 用途 | 必要性 |
 |---|---|---|
 | KDE Plasma 6 / KWin | 全局快捷键（kwin 脚本）、钉图置顶 | KDE 集成必需；纯截图功能在其他桌面也可用 |
-| `tesseract-ocr` + 语言包 | OCR 引擎 | OCR 功能必需 |
-| `qdbus6`（qt6-tools） | kwin 脚本加载、钉图置顶 | KDE 集成建议安装 |
+| `tesseract-ocr` + 语言包 | OCR 引擎 | AppImage **已捆绑**（deb/源码方式需自装） |
+| `qdbus6`（qt6-tools） | kwin 脚本加载、钉图置顶 | 仅 KDE 集成用；GNOME 下自动跳过 |
 | `libfuse2` | AppImage 双击运行 | 仅 AppImage 方式 |
+
+**AppImage：OCR 开箱即用**——包内自带 tesseract 5.x 与 `chi_sim`/`eng`/`osd`
+语言包，无需安装任何东西。deb/源码方式需：
 
 ```bash
 sudo apt install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng
 ```
 
-> OCR 引擎通过 `ocrCommand` 配置项调用外部命令（默认 tesseract），AppImage **不捆绑** OCR 引擎；任意支持 `%i` 占位符的命令行 OCR 引擎均可替换。
+> OCR 引擎由 `ocrCommand` 配置项决定（默认 `tesseract %i stdout ...`）；
+> AppImage 启动时把捆绑引擎置于 PATH 最前，也可替换为任意支持 `%i`
+> 占位符的命令行引擎。
+
+### GNOME 桌面
+
+- **截图 / 标注 / OCR / 钉图**：全部可用（AppImage 内置 Wayland 与 X11
+  双后端，GNOME Wayland 与 X11 会话均可直接运行）。
+- **F1 快捷键**：KDE 专用的 kwin 脚本机制在 GNOME 上不生效（程序会自动
+  跳过、无卡顿）。替代：GNOME「设置 → 键盘 → 自定义快捷键」添加命令
+  `flameshot gui`（路径指向 AppImage 文件），绑定 F1。
+- **托盘图标**：GNOME 需安装 AppIndicator 扩展（“AppIndicator and KStatusNotifierItem Support”）才会显示托盘；不装也不影响快捷键截图。
+- **钉图置顶**：依赖 kwin，GNOME 下钉图不置顶（其余功能不受影响）。
 
 ### 从源码构建（Debian 13 为例）
 
@@ -138,7 +153,9 @@ F1 按键
 ```
 
 流程：`debian:trixie` 容器内 CMake 构建 → 安装到 appdir → 捆绑 Qt 运行库与
-QPA 插件（xcb + wayland 双后端）→ linuxdeploy 递归闭包 + 自定义 AppRun。
+QPA 插件（xcb + wayland 双后端）+ **tesseract OCR 引擎与中/英语言包**（
+`usr/ocr/`，AppRun 注入 `PATH`/`TESSDATA_PREFIX`）→ linuxdeploy 递归闭包 +
+自定义 AppRun。
 打 `v*` tag 推送后 CI（`.github/workflows/appimage.yml`）自动构建并发布 Release。
 
 ## 与上游的差异
