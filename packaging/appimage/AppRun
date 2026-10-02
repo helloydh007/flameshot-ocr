@@ -1,0 +1,13 @@
+#!/bin/sh
+# flameshot-ocr AppImage 启动器
+HERE=$(dirname "$(readlink -f "$0")")
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# 捆绑的 QPA 插件同时包含 wayland 与 xcb：
+# - Plasma Wayland 会话通常已在会话环境中设置 QT_QPA_PLATFORM=wayland，尊重原值
+# - 未设置时显式给 "wayland;xcb" 回退链，X11 会话/嵌套 Wayland 环境自动落到 xcb
+if [ -z "${QT_QPA_PLATFORM:-}" ]; then
+    export QT_QPA_PLATFORM="wayland;xcb"
+fi
+
+exec "$HERE/usr/bin/flameshot" "$@"
