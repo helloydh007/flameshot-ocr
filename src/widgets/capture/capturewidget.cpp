@@ -1226,6 +1226,43 @@ void CaptureWidget::runSelfTest()
                            << "toast:" << toastOk;
                 pin2->setWindowOpacity(1.0);
             }
+
+            // 23: 滚轮缩放提示 —— toast 文本含「缩放」且可见
+            {
+                QWheelEvent zoomWheel(QPointF(200, 200), QPointF(200, 200),
+                                      QPoint(0, 0), QPoint(0, 120),
+                                      Qt::NoButton, Qt::NoModifier,
+                                      Qt::NoScrollPhase, false);
+                QApplication::sendEvent(pin2, &zoomWheel);
+                QApplication::processEvents(QEventLoop::AllEvents, 50);
+                auto* toast = pin2->findChild<QLabel*>();
+                const bool ok = toast && toast->isVisible() &&
+                                toast->text().contains(
+                                  OcrPanel::tr2("缩放", "Zoom"));
+                qWarning() << "SELFTEST 23 zoom-toast:"
+                           << (ok ? "PASS" : "FAIL")
+                           << "text:" << (toast ? toast->text() : QString());
+            }
+
+            // 24: 钉图 OCR 面板 —— 子控件可见且位于钉图矩形内
+            // （自动左右定位生效，不再被 Wayland 丢到图片下方/屏幕外）
+            {
+                pin2->runOcr();
+                QApplication::processEvents(QEventLoop::AllEvents, 100);
+                auto* panel = pin2->findChild<OcrPanel*>();
+                const bool visible = panel && panel->isVisible();
+                const bool inside =
+                  panel && pin2->rect().intersects(panel->geometry()) &&
+                  pin2->rect().contains(panel->geometry().topLeft()) &&
+                  pin2->rect().contains(panel->geometry().bottomRight());
+                qWarning() << "SELFTEST 24 pin-ocr-panel-beside:"
+                           << (visible && inside ? "PASS" : "FAIL")
+                           << "panel:" << (panel ? panel->geometry() : QRect())
+                           << "pin:" << pin2->rect();
+                if (panel) {
+                    panel->hide();
+                }
+            }
             fflush(stderr);
         }
 

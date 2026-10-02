@@ -28,6 +28,8 @@ public:
 
     // 复制到剪贴板（含标注合成）
     void copyToClipboard();
+    // 对整张钉图运行 OCR（结果面板显示在钉图旁）
+    void runOcr();
     // Wayland 下 setWindowOpacity 无效，透明度通过渲染层实现
     void applyOpacity();
     qreal pinOpacity() const { return m_opacity; }
@@ -87,5 +89,4 @@ private:
 private slots:
     void showContextMenu(const QPoint& pos);
     void saveToFile();
-    void runOcr();
 };
