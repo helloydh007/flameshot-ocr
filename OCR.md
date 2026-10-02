@@ -139,6 +139,20 @@ kwin 的蓝色齿轮。截图遮罩窗口不抢焦点，token 无人消费，反
 登录自愈链：autostart 启动 daemon → daemon 加载 kwin 脚本 → 脚本按
 kglobalshortcutrc `[kwin] FlameshotGuiF1=F1` 恢复绑定。
 
+**补充（实测收尾）**：改为 DBus 直调后用户仍见齿轮跳动约 2-3 秒（此时
+F1 已零进程启动）——说明还有别的窗口激活路径触发 kwin 内置
+StartupFeedback 效果。最终补刀：`~/.config/klaunchrc` 写入
+
+```ini
+[FeedbackStyle]
+BusyCursor=false
+```
+
+kwin 的该效果是 internal 编译项（`kwinrc [Plugins]` 开关无效），但它通过
+KConfigWatcher 实时监听 klaunchrc，改完立即生效（等价于 系统设置 →
+通知 → 应用启动反馈 设为"无"）。此开关全局关闭启动反馈动画；F1 场景已
+无进程启动，不再依赖该反馈，副作用仅为其它应用启动时也无光标动画。
+
 ## 许可
 
 与上游一致：GPL-3.0-or-later。
