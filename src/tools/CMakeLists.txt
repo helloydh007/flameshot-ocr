@@ -41,8 +41,10 @@ target_sources(
   flameshot
   PRIVATE pin/pintool.h
           pin/pinwidget.h
+          pin/flowlayout.h
           pin/pintool.cpp
-          pin/pinwidget.cpp)
+          pin/pinwidget.cpp
+          pin/flowlayout.cpp)
 target_sources(flameshot PRIVATE rectangle/rectangletool.h rectangle/rectangletool.cpp)
 target_sources(flameshot PRIVATE redo/redotool.h redo/redotool.cpp)
 target_sources(flameshot PRIVATE save/savetool.h save/savetool.cpp)

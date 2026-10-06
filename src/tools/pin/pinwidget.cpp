@@ -5,6 +5,7 @@
 #include <QWindow>
 
 #include "pinwidget.h"
+#include "flowlayout.h"
 #include "pinannotator.h"
 #include "qguiappcurrentscreen.h"
 #include "screenshotsaver.h"
@@ -197,7 +198,9 @@ void PinWidget::buildToolBar()
 {
     m_toolBarRow = new QWidget(this);
     m_toolBarRow->setObjectName(QStringLiteral("pinToolBar"));
-    auto* layout = new QHBoxLayout(m_toolBarRow);
+    // flameshot-ocr: FlowLayout 自动换行——按钮多/图标大时折到下一行，
+    // 不再溢出钉图宽度（40px 图标设置下尾部按钮曾跑出窗口点不到）
+    auto* layout = new FlowLayout(m_toolBarRow, 4, 2, 2);
     layout->setContentsMargins(6, 2, 6, 2);
     layout->setSpacing(2);
 

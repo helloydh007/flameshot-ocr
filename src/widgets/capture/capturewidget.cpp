@@ -1239,6 +1239,45 @@ void CaptureWidget::runSelfTest()
                 annotator->undo();
             }
 
+            // 30: 垃圾桶按钮真实点击清空（用户报 AppImage 上点击无效）——
+            // 画一笔 → 对工具条上“清空标注”按钮合成鼠标点击 → 应清空。
+            // 放在 27 之后：继承画笔工具且画布干净，垃圾桶点击路径
+            // （QToolButton::clicked → clearShapes）得到真实覆盖
+            {
+                annoPress(QPoint(150, 150));
+                annoMove(QPoint(220, 210));
+                annoRelease(QPoint(220, 210));
+                QApplication::processEvents(QEventLoop::AllEvents, 50);
+                QToolButton* trash = nullptr;
+                for (auto* b : pin2->findChildren<QToolButton*>()) {
+                    if (b->toolTip().contains(
+                          OcrPanel::tr2("清空标注", "Clear"))) {
+                        trash = b;
+                        break;
+                    }
+                }
+                bool cleared = false;
+                if (trash) {
+                    const QPoint c = trash->rect().center();
+                    QMouseEvent press(QEvent::MouseButtonPress, c,
+                                      trash->mapToGlobal(c),
+                                      Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QApplication::sendEvent(trash, &press);
+                    QMouseEvent release(QEvent::MouseButtonRelease, c,
+                                        trash->mapToGlobal(c),
+                                        Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QApplication::sendEvent(trash, &release);
+                    QApplication::processEvents(QEventLoop::AllEvents, 50);
+                    cleared = !annotator->hasShapes();
+                }
+                qWarning() << "SELFTEST 30 pin-trash-clears:"
+                           << ((trash && cleared) ? "PASS" : "FAIL")
+                           << "button:" << (trash != nullptr)
+                           << "cleared:" << cleared;
+            }
+
             // 19: 输入法 —— commitString 提交中文
             annotator->setTool(PinAnnotator::Text);
             annoPress(QPoint(80, 430));
